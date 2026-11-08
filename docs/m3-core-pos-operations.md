@@ -387,6 +387,12 @@ introduce a parallel permission model.
   organization-scoped staff only. Branch-scoped staff remain denied on an
   inactive branch; extending history access to them would require a coordinated
   change in the shared authz helper layer plus M2.1 review.
+- Write attempts on an inactive branch are denied by
+  `authz.assert_branch_role` with `PERMISSION_DENIED`. The later explicit
+  branch-status check in `open_dining_session` is defensive. Clients should
+  treat both `PERMISSION_DENIED` and `BRANCH_NOT_FOUND`/`BRANCH_ACCESS_DENIED`
+  as authorization denial; operational writes never succeed on an inactive
+  branch.
 - Realtime is not configured (`BLK-008`). Current RPCs remain correct because
   PostgreSQL is authoritative; clients must poll/refetch until a reviewed
   tenant/branch subscription design exists.

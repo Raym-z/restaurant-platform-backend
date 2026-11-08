@@ -770,6 +770,12 @@ begin
 
   v_old_quantity := v_item.quantity;
 
+  -- No-op updates must not write audit noise. This also remains allowed during
+  -- a subscription restriction because it creates no new billable work.
+  if p_quantity = v_old_quantity then
+    return private.order_detail_json(v_item.order_id);
+  end if;
+
   -- Increasing billable quantity is new operational work. Reducing quantity is
   -- a correction and remains available during a restriction or suspension.
   if p_quantity > v_old_quantity then

@@ -876,6 +876,28 @@ describe("M3 order item modification and lifecycle", () => {
     ]);
     expect(afterQuantity.rows[0]!.result.subtotalMinor).toBe(60000);
 
+    const quantityAuditBefore = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.audit_events
+        where action = 'order.item_quantity_updated'
+          and target_id = $1`,
+      [firstOrderItemId],
+    );
+    await manager.query(
+      "select public.update_order_item_quantity($1, $2) as result",
+      [firstOrderItemId, 2],
+    );
+    const quantityAuditAfter = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.audit_events
+        where action = 'order.item_quantity_updated'
+          and target_id = $1`,
+      [firstOrderItemId],
+    );
+    expect(quantityAuditAfter.rows[0]!.count).toBe(
+      quantityAuditBefore.rows[0]!.count,
+    );
+
     const secondOrderItemId = String(
       (afterAdd.rows[0]!.result.items as Array<Record<string, unknown>>).find(
         (item) => item.menuItemId === secondItem.itemId,
