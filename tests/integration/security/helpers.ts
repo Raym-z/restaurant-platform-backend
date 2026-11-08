@@ -1,3 +1,8 @@
+// Shared M2/M3 integration fixtures.
+//
+// addStaff() writes staff_role_assignments.branch_id for every branch-scoped
+// role. Carry this revision into the M3 integration; do not merge an older
+// helper variant that omitted branch_id.
 import { randomUUID } from "node:crypto";
 
 import type pg from "pg";
@@ -293,4 +298,27 @@ export const expectPgError = async (
   }
 
   throw new Error(`Expected ${code}, but the operation succeeded`);
+};
+
+export type CapturedPgError = {
+  message: string;
+  detail: string | undefined;
+  code: string | undefined;
+};
+
+export const capturePgError = async (
+  promise: Promise<unknown>,
+): Promise<CapturedPgError> => {
+  try {
+    await promise;
+  } catch (error) {
+    const record = error as { message?: string; detail?: string; code?: string };
+    return {
+      message: record.message ?? String(error),
+      detail: record.detail,
+      code: record.code,
+    };
+  }
+
+  throw new Error("Expected an error, but the operation succeeded");
 };

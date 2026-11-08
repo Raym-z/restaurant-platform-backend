@@ -44,6 +44,11 @@ assignment alone grants no role or branch visibility. Branch-assignment
 revocation suspends access while the role row remains active; re-assigning the
 branch restores the role, so permanent removal requires revoking the role.
 
+When merging M3, resolve `tests/integration/security/helpers.ts` in favor of the
+M2 revision that writes `staff_role_assignments.branch_id`. Do not merge the
+older M3 helper revision that inserts only `scope_type`; it will create invalid
+branch-scoped fixtures after M2.1.
+
 ## 4. Test layers and tools
 
 | Layer | Tool | Scope |

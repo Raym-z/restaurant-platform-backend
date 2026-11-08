@@ -6,7 +6,7 @@
 
 begin;
 
-select plan(63);
+select plan(74);
 
 select has_column(
   'public',
@@ -90,7 +90,8 @@ values
   (tests.uuid_for('m21-unassigned-auth')),
   (tests.uuid_for('m21-branch-admin-auth')),
   (tests.uuid_for('m21-assignment-only-auth')),
-  (tests.uuid_for('m21-unassigned-revoked-auth'));
+  (tests.uuid_for('m21-unassigned-revoked-auth')),
+  (tests.uuid_for('m21-legacy-restoration-auth'));
 
 insert into public.staff_profiles
   (id, auth_user_id, organization_id, display_name, status, activated_at)
@@ -106,7 +107,8 @@ values
   (tests.uuid_for('m21-unassigned-staff'), tests.uuid_for('m21-unassigned-auth'), tests.uuid_for('m21-org'), 'Unassigned', 'active', now()),
   (tests.uuid_for('m21-branch-admin-staff'), tests.uuid_for('m21-branch-admin-auth'), tests.uuid_for('m21-org'), 'Branch admin', 'active', now()),
   (tests.uuid_for('m21-assignment-only-staff'), tests.uuid_for('m21-assignment-only-auth'), tests.uuid_for('m21-org'), 'Assignment only', 'active', now()),
-  (tests.uuid_for('m21-unassigned-revoked-staff'), tests.uuid_for('m21-unassigned-revoked-auth'), tests.uuid_for('m21-org'), 'Revoked unassigned', 'active', now());
+  (tests.uuid_for('m21-unassigned-revoked-staff'), tests.uuid_for('m21-unassigned-revoked-auth'), tests.uuid_for('m21-org'), 'Revoked unassigned', 'active', now()),
+  (tests.uuid_for('m21-legacy-restoration-staff'), tests.uuid_for('m21-legacy-restoration-auth'), tests.uuid_for('m21-org'), 'Legacy restoration', 'active', now());
 
 -- Branch assignments are inserted before branch-scoped roles so the
 -- role/assignment consistency trigger sees an existing active row.
@@ -559,6 +561,26 @@ select ok(
   'organization Admin does not gain Manager permission'
 );
 
+select ok(
+  authz.has_permission('m21.permission.admin', null),
+  'organization Admin permission resolves without branch context'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.admin', tests.uuid_for('m21-other-branch')),
+  'organization Admin permission denies a foreign branch'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.admin', tests.uuid_for('m21-branch-c')),
+  'organization Admin permission denies an inactive branch'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.manager', null),
+  'organization Admin does not gain Manager permission without branch context'
+);
+
 select tests.clear_auth();
 select tests.authenticate_as(tests.uuid_for('m21-assignment-only-auth'));
 
@@ -602,6 +624,12 @@ alter table public.staff_role_assignments
 
 alter table public.staff_role_assignments
   disable trigger staff_role_assignments_validate_scope;
+
+select ok(
+  pg_get_functiondef('private.backfill_legacy_branch_role_assignments()'::regprocedure)
+    ilike '%lock table public.staff_branch_assignments in share mode%',
+  'the legacy backfill locks staff_branch_assignments against concurrent changes'
+);
 
 insert into public.staff_role_assignments
   (staff_id, organization_id, role_code, scope_type, branch_id)
@@ -676,6 +704,99 @@ select throws_ok(
   'LEGACY_BRANCH_ROLE_UNASSIGNED',
   'a revoked legacy branch role with no assignment history fails closed'
 );
+
+delete from public.staff_role_assignments
+ where staff_id = tests.uuid_for('m21-unassigned-revoked-staff');
+
+-- An active legacy role whose only assignment is revoked is treated as
+-- unassigned. Restoring the intended assignment allows the backfill to map it;
+-- afterwards the normal suspension/restoration lifecycle applies.
+insert into public.staff_branch_assignments
+  (staff_id, organization_id, branch_id)
+values
+  (tests.uuid_for('m21-legacy-restoration-staff'), tests.uuid_for('m21-org'),
+   tests.uuid_for('m21-branch-a'));
+
+update public.staff_branch_assignments
+   set revoked_at = now()
+ where staff_id = tests.uuid_for('m21-legacy-restoration-staff')
+   and branch_id = tests.uuid_for('m21-branch-a')
+   and revoked_at is null;
+
+insert into public.staff_role_assignments
+  (staff_id, organization_id, role_code, scope_type, branch_id)
+values
+  (tests.uuid_for('m21-legacy-restoration-staff'), tests.uuid_for('m21-org'),
+   'manager', 'branch', null);
+
+select throws_ok(
+  'select private.backfill_legacy_branch_role_assignments()',
+  'P0001',
+  'LEGACY_BRANCH_ROLE_UNASSIGNED',
+  'an active legacy role with only revoked assignments fails closed'
+);
+
+insert into public.staff_branch_assignments
+  (staff_id, organization_id, branch_id)
+values
+  (tests.uuid_for('m21-legacy-restoration-staff'), tests.uuid_for('m21-org'),
+   tests.uuid_for('m21-branch-a'));
+
+select lives_ok(
+  'select private.backfill_legacy_branch_role_assignments()',
+  'restoring the intended assignment lets the active legacy role map'
+);
+
+select is(
+  (
+    select branch_id
+    from public.staff_role_assignments
+    where staff_id = tests.uuid_for('m21-legacy-restoration-staff')
+      and role_code = 'manager'
+      and revoked_at is null
+  ),
+  tests.uuid_for('m21-branch-a'),
+  'the restored legacy role maps to the intended branch'
+);
+
+select tests.authenticate_as(tests.uuid_for('m21-legacy-restoration-auth'));
+
+select ok(
+  authz.has_branch_role(tests.uuid_for('m21-branch-a'), array['manager']::text[]),
+  'the restored legacy role resolves at the branch'
+);
+
+select tests.clear_auth();
+
+update public.staff_branch_assignments
+   set revoked_at = now()
+ where staff_id = tests.uuid_for('m21-legacy-restoration-staff')
+   and branch_id = tests.uuid_for('m21-branch-a')
+   and revoked_at is null;
+
+select tests.authenticate_as(tests.uuid_for('m21-legacy-restoration-auth'));
+
+select ok(
+  not authz.has_branch_role(tests.uuid_for('m21-branch-a'), array['manager']::text[]),
+  'revoking the restored assignment suspends the active legacy role'
+);
+
+select tests.clear_auth();
+
+insert into public.staff_branch_assignments
+  (staff_id, organization_id, branch_id)
+values
+  (tests.uuid_for('m21-legacy-restoration-staff'), tests.uuid_for('m21-org'),
+   tests.uuid_for('m21-branch-a'));
+
+select tests.authenticate_as(tests.uuid_for('m21-legacy-restoration-auth'));
+
+select ok(
+  authz.has_branch_role(tests.uuid_for('m21-branch-a'), array['manager']::text[]),
+  're-assigning the branch restores the active legacy role'
+);
+
+select tests.clear_auth();
 
 select * from finish();
 

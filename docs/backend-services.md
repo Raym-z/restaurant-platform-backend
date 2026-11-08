@@ -29,6 +29,7 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
 | `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
 | `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`                 | Conflict-safe branch-assignment consistency trigger, serialized role revocation, branch/organization FK index                          |
+| `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`                | Branch-revocation serialization, role-revocation lock order, backfill SHARE lock, permission branch validation, normalized errors     |
 
 Agent 1 migrations are never edited.
 
@@ -74,6 +75,11 @@ Scope enforcement follows documented role scope:
 `authz.has_permission(text, uuid)` are the branch-aware resolution points.
 `authz.has_org_role(text[])` remains deliberately organization-scope-only, so a
 branch-scoped Admin does not gain organization administration rights.
+For an organization-scoped permission check, a non-null `p_branch_id` must
+identify an active branch in the staff member's organization; a null branch means
+the caller is checking an organization-wide permission without branch context.
+Branch-scoped permission checks always require the matching active branch and an
+active branch assignment.
 
 ## 3. Last-Owner protection
 
@@ -137,8 +143,12 @@ branch assignment. A database trigger records the branch assignment whenever
 an active branch-scoped role is inserted, so direct SQL and RPC provisioning
 remain consistent. The trigger uses `ON CONFLICT DO NOTHING` against the active
 branch-assignment unique index, so concurrent grants of different roles at the
-same branch do not produce a false role conflict. Concurrent revocations lock
-the assignment row and write a single audit event.
+same branch do not produce a false role conflict. Concurrent role revocations
+and concurrent branch-assignment revocations lock the assignment row and write a
+single audit event; the second caller returns `already_revoked`. Revocation RPCs
+resolve the actor, validate the target organization, and acquire the
+organization advisory lock before locking the assignment row, consistent with
+the documented organization → row lock order.
 
 **Lifecycle semantics:** revoking a branch assignment is a suspension, not a
 permanent role removal. The role row remains active but is denied while the

@@ -12,6 +12,7 @@ import {
   HTTP_STATUS_BY_ERROR_CODE,
   PermissionKeySchema,
   ResolveTableResponseSchema,
+  RevokeStaffRoleResponseSchema,
   StaffRoleAssignmentSchema,
   SubmitGuestOrderRequestSchema,
   UtcInstantSchema,
@@ -214,6 +215,57 @@ describe("staff role grant contracts", () => {
 
     expect(branchResponse.branchId).toBe(session.branchId);
     expect(organizationResponse.branchId).toBeNull();
+  });
+});
+
+describe("staff role revocation contracts", () => {
+  it("accepts revoked and already-revoked branch responses", () => {
+    const revoked = RevokeStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      branchId: session.branchId,
+      status: "revoked",
+    });
+    const alreadyRevoked = RevokeStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      branchId: null,
+      status: "already_revoked",
+    });
+
+    expect(revoked.status).toBe("revoked");
+    expect(alreadyRevoked.status).toBe("already_revoked");
+  });
+
+  it("rejects unknown statuses and extra fields", () => {
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        branchId: session.branchId,
+        status: "pending",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        branchId: session.branchId,
+        status: "revoked",
+        unexpected: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires the branch field, including explicit null", () => {
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        status: "revoked",
+      }).success,
+    ).toBe(false);
   });
 });
 

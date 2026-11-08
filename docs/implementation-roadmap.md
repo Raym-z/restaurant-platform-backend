@@ -80,6 +80,15 @@ backup, and recovery guidance for the one-way legacy backfill.
 - Define realtime notifications and recovery requirements.
 - Test POS/ordering/KDS integration.
 
+**M3 integration note:** M3 order/KDS work must consume the M2.1 branch-scoped
+role model. The integration fixture in
+`tests/integration/security/helpers.ts` writes
+`staff_role_assignments.branch_id` for every branch-scoped role and must be
+carried into the M3 integration; do not merge an older helper variant that
+omits `branch_id`. Branch-scoped grants require `branchId`, responses include
+`branchId`, and M3 must not assume that assigning a branch extends an existing
+role to that branch.
+
 **Outcome:** Shared order lifecycle.
 
 ### Phase 8: Cash payments

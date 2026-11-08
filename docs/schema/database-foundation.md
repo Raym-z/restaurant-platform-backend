@@ -131,7 +131,7 @@ A staff member may therefore be Manager at Branch A and Cashier at Branch B, but
 
 1. Branch assignments grant no permission by themselves.
 2. A branch-scoped role grants permissions only at its specific `branch_id`, and only while the matching branch assignment is active. An `AFTER INSERT OR UPDATE` trigger creates the matching active branch assignment when a branch-scoped role is recorded, so the two records stay consistent without a required second call.
-3. An organization-scoped role grants permissions across all branches; branch assignments do not reduce that reach.
+3. An organization-scoped role grants permissions across all branches; branch assignments do not reduce that reach. When `authz.has_permission` is called with a non-null branch for an organization-scoped role, that branch must be active and in the staff member's organization; `null` means the caller is checking an organization-wide permission without branch context.
 4. Owner is organization-wide and requires no branch assignment.
 5. Multiple roles combine as a union of permissions.
 6. Revoked assignments and inactive staff are ignored.
@@ -139,7 +139,7 @@ A staff member may therefore be Manager at Branch A and Cashier at Branch B, but
 
 ### Legacy branch-role backfill
 
-Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically. A follow-up migration, `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`, makes the branch-assignment consistency trigger conflict-safe and serializes concurrent revocations.
+Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically. Follow-up migrations `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` and `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` make the branch-assignment consistency trigger conflict-safe, serialize concurrent revocations, fix revocation lock order, and protect the backfill against concurrent branch-assignment changes.
 
 1. For each legacy active assignment, its target branches are the staff member's active `staff_branch_assignments`.
 2. The original row receives the first branch and additional rows are inserted for the remaining branches, preserving the assigned actor, reason, `assigned_at`, `created_at`, and revocation state. The original row's `updated_at` is refreshed by the table's `updated_at` trigger; duplicate rows copy the pre-migration `updated_at`.
@@ -202,9 +202,15 @@ select *,
 5. Apply the migration inside a single transaction. The Supabase CLI/pgx path is transactional; if using `psql`, use `-1` (single transaction) and `ON_ERROR_STOP=1`.
 6. Validate after apply: no branch-scoped row has `branch_id IS NULL`; the new partial unique indexes exist; the one-active-Owner index still exists; and the authorization/RLS tests pass.
 
+#### Active legacy role with a revoked assignment
+
+An active legacy role is mapped only across **active** `staff_branch_assignments`. If every assignment for that role has been revoked, the backfill raises `LEGACY_BRANCH_ROLE_UNASSIGNED`, even though the role itself is active. Treat it like an unassigned active role: restore the intended active assignment or revoke the role before applying the migration. Do not invent a branch.
+
+After the role is mapped, the normal lifecycle applies: revoking the branch assignment suspends access while the role remains active, and re-assigning the branch restores the role. The SQL regression suite covers this restore/suspend/restore sequence.
+
 #### Locking, maintenance, backup, and recovery
 
-- **Locking:** `ALTER TABLE ... ADD COLUMN` takes `ACCESS EXCLUSIVE` on `public.staff_role_assignments` for the whole migration transaction. Reads and writes to that table block until commit. The backfill is row-by-row and the new indexes are built non-concurrently. Plan a maintenance/low-traffic window and avoid concurrent staff-role or branch-assignment changes during the run.
+- **Locking:** `ALTER TABLE ... ADD COLUMN` takes `ACCESS EXCLUSIVE` on `public.staff_role_assignments` for the whole migration transaction. Reads and writes to that table block until commit. The backfill is row-by-row and the new indexes are built non-concurrently. The backfill function also takes a `SHARE` lock on `public.staff_branch_assignments`, so branch-assignment writes (including `assign_staff_branch`, `revoke_staff_branch`, and the role-consistency trigger) wait until the backfill transaction completes. Plan a maintenance/low-traffic window and avoid concurrent staff-role changes during the run.
 - **Backup:** before applying, keep a restorable copy, for example:
   ```sql
   create schema if not exists migration_backup;

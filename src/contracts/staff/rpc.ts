@@ -80,6 +80,19 @@ export type RevokeStaffRoleRequest = z.infer<
   typeof RevokeStaffRoleRequestSchema
 >;
 
+export const RevokeStaffRoleResponseSchema = z
+  .object({
+    assignmentId: UuidSchema,
+    staffId: UuidSchema,
+    branchId: UuidSchema.nullable(),
+    status: z.enum(["revoked", "already_revoked"]),
+  })
+  .strict();
+
+export type RevokeStaffRoleResponse = z.infer<
+  typeof RevokeStaffRoleResponseSchema
+>;
+
 export const AssignStaffBranchRequestSchema = z
   .object({
     staffId: UuidSchema,

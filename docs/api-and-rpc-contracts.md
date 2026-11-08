@@ -524,6 +524,21 @@ For an organization-scoped Admin, omit `branchId` (or send `null`). The response
 
 The backend must use centralized permission definitions rather than scattered frontend role checks.
 
+Staff role/branch administration normalizes missing and cross-tenant resources to the same error detail for each resource class (`Staff member was not found`, `Branch was not found`, `Role assignment was not found`, or `Branch assignment was not found`) so callers cannot distinguish a missing row from another tenant's row.
+
+`revoke_staff_role` responses are typed:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "branchId": "uuid-or-null",
+  "status": "revoked"
+}
+```
+
+`status` is `revoked` or `already_revoked`. Concurrent revocations serialize: exactly one caller receives `revoked`, later callers receive `already_revoked`, and only one audit event is written.
+
 Only the Owner may initiate subscription renewal, upgrades, downgrades, or plan changes.
 
 Admin may manage permitted subscription contact information.
