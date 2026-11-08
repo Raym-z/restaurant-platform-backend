@@ -1,0 +1,37 @@
+{
+  "name": "restaurant-platform-backend",
+  "version": "1.0.0",
+  "description": "Shared backend infrastructure for a multi-tenant Restaurant SaaS platform.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Raym-z/restaurant-platform-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Raym-z/restaurant-platform-backend/issues"
+  },
+  "homepage": "https://github.com/Raym-z/restaurant-platform-backend#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "supabase": "^3.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
