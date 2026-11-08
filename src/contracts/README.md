@@ -22,6 +22,9 @@ schemas shared by the backend, POS, ordering, and waitlist applications.
   seeded by this package.
 - Guest tokens are raw opaque credentials returned once by a trusted Edge
   Function. Only their SHA-256 hashes are persisted server-side.
+- Relative imports use explicit `.ts` extensions so the same contracts work in
+  Deno Edge Functions. TypeScript consumers should enable
+  `allowImportingTsExtensions` (or use a bundler that resolves them).
 
 ## Deliberately out of scope
 
