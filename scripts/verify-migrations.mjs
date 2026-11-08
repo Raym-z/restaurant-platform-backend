@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { captureCommand } from './lib/cli.mjs';
+import { analyzeSql } from './lib/sql-scan.mjs';
 import {
   detail,
   fail,
@@ -14,19 +15,6 @@ import {
 const MIGRATIONS_DIR = path.join('supabase', 'migrations');
 const FILENAME_PATTERN = /^(\d{14})_[a-z0-9_]+\.sql$/;
 const APPROVAL_MARKER = /approved-destructive-change/i;
-
-const DESTRUCTIVE_PATTERNS = [
-  { name: 'DROP TABLE', pattern: /\bdrop\s+table\b/i },
-  { name: 'DROP COLUMN', pattern: /\bdrop\s+column\b/i },
-  { name: 'DROP SCHEMA', pattern: /\bdrop\s+schema\b/i },
-  { name: 'DROP TYPE', pattern: /\bdrop\s+type\b/i },
-  { name: 'TRUNCATE', pattern: /\btruncate\b/i },
-  { name: 'DELETE FROM', pattern: /\bdelete\s+from\b/i },
-  {
-    name: 'ALTER COLUMN TYPE',
-    pattern: /\balter\s+table\b[\s\S]{0,200}?\balter\s+column\b[\s\S]{0,80}?\btype\b/i,
-  },
-];
 
 const failures = [];
 const warnings = [];
@@ -154,32 +142,26 @@ function checkDestructiveAndSecurity(migrations, baseRef) {
     const relative = path.relative(process.cwd(), migration.path);
     const sql = readFileSync(migration.path, 'utf8');
     const approved = APPROVAL_MARKER.test(sql);
+    const analysis = analyzeSql(sql);
 
-    for (const rule of DESTRUCTIVE_PATTERNS) {
-      if (rule.pattern.test(sql) && !approved) {
+    if (!approved) {
+      for (const finding of analysis.destructive) {
         failures.push(
-          `${relative}: ${rule.name} requires "-- approved-destructive-change: <reference>" and review.`,
+          `${relative}:${finding.line}: ${finding.rule} requires "-- approved-destructive-change: <reference>" and review.`,
         );
       }
     }
 
-    if (/\bdisable\s+row\s+level\s+security\b/i.test(sql)) {
-      failures.push(`${relative}: DISABLE ROW LEVEL SECURITY is not permitted.`);
-    }
-
-    if (/\bsecurity\s+definer\b/i.test(sql) && !/\bset\s+search_path\b/i.test(sql)) {
-      failures.push(
-        `${relative}: SECURITY DEFINER function must set an explicit search_path.`,
-      );
-    }
-
-    const grantMatch = sql.match(
-      /\bgrant\b[\s\S]{0,500}?\b(?:on|to)\b[\s\S]{0,500}?\b(?:anon|authenticated|public)\b/i,
-    );
-    if (grantMatch && /\bprivate\./i.test(grantMatch[0])) {
-      failures.push(
-        `${relative}: granting private-schema objects to anon/authenticated/public is not permitted.`,
-      );
+    for (const finding of analysis.security) {
+      const message =
+        finding.rule === 'PRIVATE GRANT'
+          ? finding.message
+          : finding.rule === 'DISABLE RLS'
+            ? 'DISABLE ROW LEVEL SECURITY is not permitted.'
+            : finding.rule === 'SECURITY DEFINER'
+              ? 'SECURITY DEFINER function must set an explicit search_path.'
+              : finding.rule;
+      failures.push(`${relative}:${finding.line}: ${message}`);
     }
   }
 
