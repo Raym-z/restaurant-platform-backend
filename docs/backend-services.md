@@ -27,6 +27,7 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108110400_security_remediation_phase2.sql`                       | Organization locking, missing-subscription fail-closed, session lock, rate-limit retention, platform-admin plan access                  |
 | `20261108110500_security_remediation_error_consistency_menu_staff.sql` | Cross-tenant not-found normalization for menu and staff administration RPCs                                                             |
 | `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
+| `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
 
 Agent 1 migrations are never edited.
 
@@ -59,7 +60,19 @@ Scope enforcement follows documented role scope:
 - Admin is organization-wide only when the assignment is organization-scoped.
 - Manager, Cashier, and Kitchen Staff are branch-scoped.
 - Branch assignments grant no permission by themselves; a branch-scoped role
-  assignment and an active branch assignment are both required.
+  assignment and an active branch assignment for the same branch are both
+  required.
+- A branch-scoped role applies only at `staff_role_assignments.branch_id`.
+  Holding Manager at Branch A never grants Manager at Branch B.
+- Organization-scoped roles ignore branch assignment reach and apply to every
+  active branch in the organization.
+- Revoked role assignments, revoked branch assignments, inactive staff, and
+  inactive branches all deny access.
+
+`authz.has_branch_access(uuid)`, `authz.has_branch_role(uuid, text[])`, and
+`authz.has_permission(text, uuid)` are the branch-aware resolution points.
+`authz.has_org_role(text[])` remains deliberately organization-scope-only, so a
+branch-scoped Admin does not gain organization administration rights.
 
 ## 3. Last-Owner protection
 
@@ -105,13 +118,24 @@ There is no ownership-transfer RPC or permission in the initial release.
 
 ### Staff
 
-- `grant_staff_role(staff_id, role_code, scope_type, reason)` — Owner only may
-  grant Admin; Owner role cannot be granted.
-- `revoke_staff_role(assignment_id, reason)`.
+- `grant_staff_role(staff_id, role_code, scope_type, reason, branch_id)` —
+  Owner only may grant Admin; Owner role cannot be granted. Branch-scoped roles
+  require `branch_id` in the caller's organization and atomically ensure an
+  active branch assignment for that staff/branch. Organization-scoped grants
+  must omit `branch_id`. The response is
+  `{assignmentId, staffId, roleCode, scope, branchId}`.
+- `revoke_staff_role(assignment_id, reason)` — revocation is audited with the
+  assignment's branch context and takes effect immediately.
 - `assign_staff_branch(staff_id, branch_id)`.
 - `revoke_staff_branch(assignment_id, reason)`.
 - `deactivate_staff(staff_id, reason)`, `reactivate_staff(staff_id)`.
 - `update_staff_profile(staff_id, display_name)`.
+
+Branch-scoped authorization still requires both the role row and an active
+branch assignment. A database trigger records the branch assignment whenever
+an active branch-scoped role is inserted, so direct SQL and RPC provisioning
+remain consistent. Revoking the branch assignment denies access even while the
+role row remains active.
 
 ### Menu and tables
 

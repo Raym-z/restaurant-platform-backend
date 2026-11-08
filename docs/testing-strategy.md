@@ -31,9 +31,9 @@ The authorization model under test is exactly:
 
 - Owner (organization-wide)
 - Admin (organization-wide or explicitly branch-scoped)
-- Manager (assigned branches)
-- Cashier (assigned branches)
-- Kitchen Staff (assigned branches)
+- Manager (specific branch per assignment)
+- Cashier (specific branch per assignment)
+- Kitchen Staff (specific branch per assignment)
 
 Host/Queue Staff is not part of the initial release and must not appear in
 fixtures, seed data, or tests. Granular permission mappings beyond documented

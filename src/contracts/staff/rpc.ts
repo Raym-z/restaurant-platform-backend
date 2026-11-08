@@ -23,6 +23,7 @@ export const GrantStaffRoleRequestSchema = z
     staffId: UuidSchema,
     role: AssignableStaffRoleSchema,
     scope: RoleScopeSchema,
+    branchId: UuidSchema.nullish(),
     reason: z.string().trim().max(500).optional(),
   })
   .strict()
@@ -32,6 +33,22 @@ export const GrantStaffRoleRequestSchema = z
         code: "custom",
         path: ["scope"],
         message: "Manager, Cashier, and Kitchen Staff require branch scope",
+      });
+    }
+
+    if (value.scope === "branch" && !value.branchId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["branchId"],
+        message: "Branch-scoped assignments require a branch",
+      });
+    }
+
+    if (value.scope === "organization" && value.branchId != null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["branchId"],
+        message: "Organization-scoped assignments must not include a branch",
       });
     }
   });
@@ -44,6 +61,7 @@ export const GrantStaffRoleResponseSchema = z
     staffId: UuidSchema,
     roleCode: StaffRoleSchema,
     scope: RoleScopeSchema,
+    branchId: UuidSchema.nullable(),
   })
   .strict();
 

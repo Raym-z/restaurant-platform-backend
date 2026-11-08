@@ -6,6 +6,8 @@ import {
   ApiErrorCodeSchema,
   ApiErrorPayloadSchema,
   AppError,
+  GrantStaffRoleRequestSchema,
+  GrantStaffRoleResponseSchema,
   GuestSessionContextSchema,
   HTTP_STATUS_BY_ERROR_CODE,
   PermissionKeySchema,
@@ -140,6 +142,78 @@ describe("role scope contracts", () => {
         branchId: null,
       }).success,
     ).toBe(false);
+  });
+
+  it("allows the same staff member to hold different roles at two branches", () => {
+    const managerAtA = StaffRoleAssignmentSchema.parse({
+      role: "manager",
+      scope: "branch",
+      branchId: session.branchId,
+    });
+    const cashierAtB = StaffRoleAssignmentSchema.parse({
+      role: "cashier",
+      scope: "branch",
+      branchId: "00000000-0000-4000-8000-000000000005",
+    });
+
+    expect(managerAtA.branchId).toBe(session.branchId);
+    expect(cashierAtB.role).toBe("cashier");
+  });
+});
+
+describe("staff role grant contracts", () => {
+  it("requires a branch identifier for branch-scoped grants", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "manager",
+        scope: "branch",
+        reason: "Open the second branch",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a branch identifier on organization-scoped grants", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "admin",
+        scope: "organization",
+        branchId: session.branchId,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a branch-scoped grant with a branch identifier", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "cashier",
+        scope: "branch",
+        branchId: session.branchId,
+        reason: "Cashier at the main branch",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires the response to state the branch, including null for organization scope", () => {
+    const branchResponse = GrantStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      roleCode: "manager",
+      scope: "branch",
+      branchId: session.branchId,
+    });
+    const organizationResponse = GrantStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      roleCode: "admin",
+      scope: "organization",
+      branchId: null,
+    });
+
+    expect(branchResponse.branchId).toBe(session.branchId);
+    expect(organizationResponse.branchId).toBeNull();
   });
 });
 

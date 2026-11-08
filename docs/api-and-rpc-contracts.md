@@ -494,7 +494,33 @@ Owner has organization-wide authority.
 
 Admin may be organization-wide or branch-assigned according to their configured scope.
 
-Manager, Cashier, and Kitchen Staff are restricted to assigned branches.
+Manager, Cashier, and Kitchen Staff are restricted to the specific branch on each role assignment and also require an active branch assignment for that branch.
+
+A role assignment is either organization-scoped with no branch, or branch-scoped with exactly one branch in the same organization. The same staff member may be Manager at Branch A and Cashier at Branch B. A branch-scoped role never applies at another branch, even when the staff member is assigned to multiple branches.
+
+`grant_staff_role` shape:
+
+```json
+{
+  "staffId": "uuid",
+  "role": "manager",
+  "scope": "branch",
+  "branchId": "uuid",
+  "reason": "Branch manager"
+}
+```
+
+For an organization-scoped Admin, omit `branchId` (or send `null`). The response always states the branch, using `null` for organization scope:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "roleCode": "manager",
+  "scope": "branch",
+  "branchId": "uuid"
+}
+```
 
 The backend must use centralized permission definitions rather than scattered frontend role checks.
 
@@ -564,6 +590,8 @@ Staff invitations may use Supabase Auth invitation functionality through a trust
 Never allow a frontend to assign itself Owner, Admin, or Platform Admin privileges.
 
 Role and branch assignment changes must be audited.
+
+Assigning a branch role records the requested `branch_id` on the role row and ensures an active branch assignment exists for the same staff member and branch. Branch assignments still grant no permission by themselves; revoking one removes branch access even while a role row remains active. Different roles may be assigned at different branches for the same staff member.
 
 ### 8.3 POS — Menu Management
 

@@ -72,6 +72,8 @@ RLS is enabled on all `public` tables, including reference/lookup tables. No pol
 
 Agent 2 migrations should use later timestamps and merge after the schema. Do not edit applied migrations.
 
+M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5.
+
 ## 4. Tenant consistency
 
 Branch-scoped tables store both `organization_id` and `branch_id` and use composite foreign keys:
@@ -110,17 +112,60 @@ Allowed scope by role:
 | Cashier | branch only |
 | Kitchen Staff | branch only |
 
-A database trigger rejects invalid role/scope combinations.
+`public.staff_role_assignments.branch_id` makes the scope concrete:
+
+- Organization-scoped assignments have `branch_id IS NULL`.
+- Branch-scoped assignments have a non-null `branch_id`.
+- `(branch_id, organization_id)` references `public.branches (id, organization_id)`, so a branch assignment can never point at another tenant's branch.
+- A check constraint enforces the null/non-null rule, and a trigger rejects invalid role/scope combinations.
+
+Active uniqueness is split by scope:
+
+- `staff_role_assignments_active_organization_role_unique`: one active organization-scoped assignment per `(staff_id, role_code)`.
+- `staff_role_assignments_active_branch_role_unique`: one active branch-scoped assignment per `(staff_id, role_code, branch_id)`.
+- `staff_role_assignments_one_active_owner`: unchanged one-active-Owner-per-organization invariant.
+
+A staff member may therefore be Manager at Branch A and Cashier at Branch B, but cannot hold two active Manager assignments at Branch A. Revoked rows do not participate in the active uniqueness indexes and can be replaced.
 
 ### Effective permission rules for Agent 2
 
 1. Branch assignments grant no permission by themselves.
-2. A branch-scoped role grants permissions only for actively assigned branches.
+2. A branch-scoped role grants permissions only at its specific `branch_id`, and only while the matching branch assignment is active. An `AFTER INSERT OR UPDATE` trigger creates the matching active branch assignment when a branch-scoped role is recorded, so the two records stay consistent without a required second call.
 3. An organization-scoped role grants permissions across all branches; branch assignments do not reduce that reach.
 4. Owner is organization-wide and requires no branch assignment.
 5. Multiple roles combine as a union of permissions.
 6. Revoked assignments and inactive staff are ignored.
-7. Branch-scoped staff see only assigned branches; organization-scoped staff see all branches.
+7. Branch-scoped staff see only branches where they hold a branch-scoped role and an active branch assignment; organization-scoped staff see all branches.
+
+### Legacy branch-role backfill
+
+Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically:
+
+1. For each legacy active assignment, its target branches are the staff member's active `staff_branch_assignments`.
+2. The original row receives the first branch and additional rows are inserted for the remaining branches, preserving actor, reason, timestamps, and revocation state.
+3. This preserves the exact effective branch reach of the old model. It never adds a branch.
+4. A legacy row with no branch assignment cannot be represented without inventing access. The migration raises `LEGACY_BRANCH_ROLE_UNASSIGNED` and rolls back.
+
+Apply the migration inside a transaction, as the Supabase CLI does. Running it with per-statement autocommit could leave the new column in place even though the backfill aborted.
+
+Before applying the migration to a database that may contain legacy branch-scoped assignments, run:
+
+```sql
+select sra.id,
+       sra.staff_id,
+       sra.role_code,
+       sra.revoked_at,
+       count(sba.id) filter (where sba.revoked_at is null) as active_branch_assignments
+  from public.staff_role_assignments sra
+  left join public.staff_branch_assignments sba
+    on sba.staff_id = sra.staff_id
+   and sba.organization_id = sra.organization_id
+ where sra.scope_type = 'branch'
+ group by sra.id, sra.staff_id, sra.role_code, sra.revoked_at
+ order by sra.staff_id, sra.role_code;
+```
+
+If any active legacy row reports zero active branch assignments, create the intended branch assignment or revoke the legacy row before applying. Do not add a branch merely to satisfy the migration. Revoked legacy rows are mapped across their historical branch assignments; if none exist, reconcile or archive the row explicitly.
 
 ### Owner invariant
 

@@ -23,6 +23,22 @@ and Agent 2 implementations land.
 | `T-SEC-*` | `security-guidelines.md` §13 | Ready (static), database portions blocked |
 | `T-CI-*` | `implementation-roadmap.md` Phase 1, Phase 11 | Ready |
 
+## M2.1 per-branch role coverage
+
+| Scenario | Test |
+|---|---|
+| Manager at Branch A and Cashier at Branch B resolve per branch | `supabase/tests/database/010_staff_branch_roles.test.sql`; `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Manager at A cannot obtain Manager at B | both files above |
+| Cashier at B cannot obtain Cashier at A | both files above |
+| Organization Owner/Admin remain organization-wide | both files above |
+| Revoked role or branch assignment grants no access | both files above |
+| Inactive staff or inactive branch denied | both files above |
+| Cross-organization and foreign-branch assignment rejected | both files above |
+| Duplicate active assignment and revoked replacement | both files above |
+| One-active-Owner invariant retained | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Legacy backfill split and fail-closed behavior | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Contract requires branch for branch-scoped grants | `src/contracts/common/contracts.test.ts` |
+
 ## Special-attention coverage
 
 | Requirement | Primary suites |

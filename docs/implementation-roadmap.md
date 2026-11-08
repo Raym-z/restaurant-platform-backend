@@ -39,6 +39,14 @@ Implement the backend in dependency order. Each phase should be reviewed and tes
 - Test cross-tenant denial paths.
 - Review privileged function grants.
 
+**M2.1 implementation note:** staff role assignments are branch-aware. A role
+row is either organization-scoped with no branch, or branch-scoped with one
+branch. The same staff member may hold different roles at different branches.
+Legacy branch-scoped rows are deterministically split across their active
+branch assignments before the new uniqueness and check constraints are
+enforced. The five canonical roles and the one-active-Owner invariant are
+unchanged.
+
 **Outcome:** Secure access foundation.
 
 ### Phase 5: Restaurant configuration

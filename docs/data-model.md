@@ -41,19 +41,30 @@ The fixed roles are:
 
 - **Owner** — exactly one per organization; organization-wide authority.
 - **Admin** — organization administration, with scope determined by explicit organization-wide or assigned-branch scope.
-- **Manager** — operational management within assigned branches.
-- **Cashier** — cashier and payment workflows within assigned branches.
-- **Kitchen Staff** — kitchen and preparation workflows within assigned branches.
+- **Manager** — operational management at the specific branch on each assignment.
+- **Cashier** — cashier and payment workflows at the specific branch on each assignment.
+- **Kitchen Staff** — kitchen and preparation workflows at the specific branch on each assignment.
 
 Role permissions and scope are enforced by trusted backend logic and database policies, not merely by frontend navigation or UI visibility. Admin scope must be represented explicitly; an Admin must not automatically be assumed to have organization-wide access unless assigned that scope.
 
+Each role assignment carries an explicit scope. Organization-scoped assignments have no branch. Branch-scoped assignments reference exactly one branch in the same organization. A staff member may hold different roles at different branches:
+
+| Staff member | Assignment | Effective reach |
+|---|---|---|
+| A | Manager, Branch 1 | Branch 1 only, as Manager |
+| A | Cashier, Branch 2 | Branch 2 only, as Cashier |
+| B | Kitchen Staff, Branch 1 | Branch 1 only, as Kitchen Staff |
+| C | Owner, organization | All branches, organization-wide |
+
+A role assigned to Branch 1 never grants that role at Branch 2. Multiple roles combine as a union only within their own scopes.
+
 ### Staff Branch Assignment
 
-Associates staff with the branches they may access.
+Associates staff with the branches they may access and remains a required gate for branch-scoped roles.
 
 - Owner access is organization-wide.
-- Manager, Cashier, and Kitchen Staff access is limited to assigned branches.
-- Admin access may be organization-wide or limited to assigned branches, according to the explicit scope assigned to that Admin.
+- Manager, Cashier, and Kitchen Staff access is limited to the specific branch assigned on each role row, and requires an active branch assignment for that branch.
+- Admin access may be organization-wide or limited to a specific branch, according to the explicit scope assigned to that Admin.
 
 ### Platform Admin Identity
 

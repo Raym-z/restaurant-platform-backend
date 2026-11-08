@@ -19,7 +19,9 @@ The tenant hierarchy is Platform → Organization → Branch.
 
 Policies must ensure:
 - Staff can access only their single associated organization and only permitted resources within it.
-- Staff branch-scoped access is limited to assigned or explicitly authorized branches.
+- Staff branch-scoped access is limited to the branch on each branch-scoped role assignment and also requires an active branch assignment for that branch.
+- A branch-scoped role at Branch 1 never authorizes reads or writes at Branch 2, even if the staff member also has a branch assignment at Branch 2.
+- Revoked role assignments, revoked branch assignments, inactive staff, and inactive branches are denied.
 - Organization-level access is granted only to roles designed for that scope.
 - Staff cannot access a second organization by changing an organization identifier.
 - Customer users can access only their own protected customer records.
