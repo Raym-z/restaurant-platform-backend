@@ -13,11 +13,12 @@ import {
   readJsonBody,
   successResponse,
 } from "../_shared/http.ts";
+import { enforceRateLimit, getClientBucketKey } from "../_shared/rateLimit.ts";
 import { callRpc } from "../_shared/rpc.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
 import { sha256Hex } from "../_shared/token.ts";
 
-Deno.serve(async (request: Request): Promise<Response> => {
+Deno.serve(async (request: Request, info): Promise<Response> => {
   let env: EdgeEnv | null = null;
 
   try {
@@ -43,8 +44,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
       await readJsonBody(request),
     );
     const tokenHash = await sha256Hex(input.guestToken);
-
     const client = createServiceClient();
+
+    const clientBucket = await getClientBucketKey(request, info, env);
+    await enforceRateLimit(client, "guest_reconnect_ip", clientBucket);
+    await enforceRateLimit(client, "guest_token", tokenHash);
+
     const data = await callRpc<Record<string, unknown>>(
       client,
       "validate_guest_token",

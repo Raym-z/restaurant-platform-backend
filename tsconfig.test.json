@@ -8,6 +8,7 @@
     "verbatimModuleSyntax": false,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
     "sourceMap": false,
     "declaration": false,
     "declarationMap": false

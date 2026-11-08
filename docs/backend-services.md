@@ -12,14 +12,21 @@ helpers, RPCs, backend service migrations, Edge Functions, and shared contracts.
 
 Service migrations follow the Agent 1 baseline and are additive:
 
-| Migration                                          | Purpose                                                                                                                                 |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `20261108100000_authz_helpers.sql`                 | `authz` helper schema, staff/customer/platform-admin resolution, role/scope checks, subscription gates, audit writer, last-Owner guards |
-| `20261108100100_rls_policies.sql`                  | SELECT policies, approved customer self-profile update, client grants                                                                   |
-| `20261108100200_idempotency_helpers.sql`           | Scoped idempotency begin/complete/fail helpers                                                                                          |
-| `20261108100300_rpc_organization_branch_staff.sql` | Organization, branch, and staff RPCs                                                                                                    |
-| `20261108100400_rpc_menu_tables_sessions.sql`      | Menu, table, QR, dining-session, and guest-token RPCs                                                                                   |
-| `20261108100500_rpc_waitlist_platform.sql`         | Waitlist and platform-admin metadata RPCs                                                                                               |
+| Migration                                                              | Purpose                                                                                                                                 |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `20261108100000_authz_helpers.sql`                                     | `authz` helper schema, staff/customer/platform-admin resolution, role/scope checks, subscription gates, audit writer, last-Owner guards |
+| `20261108100100_rls_policies.sql`                                      | SELECT policies, approved customer self-profile update, client grants                                                                   |
+| `20261108100200_idempotency_helpers.sql`                               | Scoped idempotency begin/complete/fail helpers                                                                                          |
+| `20261108100300_rpc_organization_branch_staff.sql`                     | Organization, branch, and staff RPCs                                                                                                    |
+| `20261108100400_rpc_menu_tables_sessions.sql`                          | Menu, table, QR, dining-session, and guest-token RPCs                                                                                   |
+| `20261108100500_rpc_waitlist_platform.sql`                             | Waitlist and platform-admin metadata RPCs                                                                                               |
+| `20261108110000_security_remediation_foundation.sql`                   | SHA-256 fingerprints, rate limiting, organization status, session context guard, plan visibility                                        |
+| `20261108110100_security_remediation_rpcs.sql`                         | Organization/branch/table/session locking, audit, and status enforcement                                                                |
+| `20261108110200_security_remediation_waitlist.sql`                     | Waitlist concurrency/rate limiting and session-wide token revocation                                                                    |
+| `20261108110300_security_remediation_error_consistency.sql`            | Cross-tenant not-found normalization for organization, branch, and table updates                                                        |
+| `20261108110400_security_remediation_phase2.sql`                       | Organization locking, missing-subscription fail-closed, session lock, rate-limit retention, platform-admin plan access                  |
+| `20261108110500_security_remediation_error_consistency_menu_staff.sql` | Cross-tenant not-found normalization for menu and staff administration RPCs                                                             |
+| `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
 
 Agent 1 migrations are never edited.
 
@@ -176,11 +183,114 @@ never logged or persisted.
 `guest-submit-order` is not implemented because menu availability semantics and
 order transition rules are blocked.
 
+## 7.1 Security remediation behavior
+
+### Organization operational status
+
+- `active`: normal authorized operations.
+- `suspended`: staff/guest operational mutations are blocked with
+  `ORGANIZATION_NOT_OPERATIONAL`; RLS historical reads remain available;
+  existing guest tokens are rejected.
+- `pending_deletion`: new operational mutations are blocked; historical reads
+  and existing guest-session reads remain available; new guest sessions/tokens
+  are blocked.
+- `deleted_at` set: treated as non-operational.
+- `restricted` subscription state: existing guest sessions remain readable; new
+  sessions/tokens and new orders are blocked.
+
+The checks are centralized in `authz.organization_is_operational`,
+`authz.organization_allows_guest_session`, and
+`authz.assert_org_operational`. A `dining_sessions` insert trigger rechecks
+table, branch, and organization status as defense in depth.
+
+Operational mutations take a shared transaction-scoped advisory lock keyed by
+organization; suspension/pending deletion takes an exclusive keyed advisory
+lock. Shared operations run concurrently and suspension waits for in-flight
+operations. Branch, table, and dining-session row locks are acquired only after
+the organization lock. Guest token validation takes the org shared lock plus a
+share lock on the dining-session row; session-wide revocation takes the
+exclusive dining-session lock. Missing subscription records fail closed as
+`restricted`; the resulting operational error is consistently
+`SUBSCRIPTION_RESTRICTED`. Authorization/status failures use
+`ORGANIZATION_NOT_OPERATIONAL`.
+
+### Rate limiting
+
+`public.consume_rate_limit(policy, bucket_suffix)` is a service-role RPC backed
+by `private.rate_limit_policies` and `private.rate_limit_buckets`. Consumption
+is atomic and works across Edge Function instances. Default seeded policies:
+
+| Policy                   | Attempts | Window |
+| ------------------------ | -------: | -----: |
+| `guest_resolve_ip`       |       10 |    60s |
+| `guest_resolve_qr`       |       60 |    60s |
+| `guest_reconnect_ip`     |       60 |    60s |
+| `guest_session_ip`       |      120 |    60s |
+| `guest_token`            |      120 |    60s |
+| `waitlist_join_customer` |       10 |  3600s |
+
+Edge Functions return HTTP 429 with `Retry-After`. `join_waitlist` enforces the
+customer policy server-side in SQL. These defaults are security controls and
+can be tuned without changing business rules.
+
+IP-derived buckets are HMAC-SHA-256 hashes; raw IPs are never stored. Required
+Edge configuration:
+
+- `RATE_LIMIT_HASH_SECRET` — at least 32 characters; required, otherwise the
+  guest functions fail closed.
+- `TRUSTED_CLIENT_IP_HEADER` — optional; one of `cf-connecting-ip`,
+  `x-real-ip`, or `x-forwarded-for`. Only set this when the deployed platform
+  guarantees the header is overwritten/authenticated.
+- `TRUSTED_PROXY_HOPS` — positive integer, default 1, used to select the
+  correct `x-forwarded-for` entry from the right.
+
+If no trusted header is configured, the direct peer address from
+`Deno.serve` connection info is used. If that is unavailable or malformed, all
+such requests share a single `unknown` bucket (safe fallback, but coarse).
+Gateway header behavior is a deployment assumption and is not verified by this
+repository.
+
+Rate-limit retention is separate from guest-token cleanup (`BLK-003`). Call
+`public.cleanup_rate_limit_buckets(retention_seconds)` from a scheduled job
+(recommended daily; minimum retention 60 seconds). The default is 86,400
+seconds. Cleanup deletes only buckets whose policy window has fully expired and
+whose expiry is older than the retention interval; an active hourly window is
+never deleted merely because the retention interval is short.
+
+Waitlist rate-limit buckets hash the customer UUID as
+`private.sha256_hex('customer:' || customer_id::text)`; the raw customer UUID
+is not stored in the bucket key.
+
+### Timestamps
+
+Contract timestamps accept `Z` or numeric offsets and normalize to UTC `Z`.
+This matches PostgreSQL/PostgREST `timestamptz` serialization.
+
+### Guest token revocation
+
+`public.revoke_session_guest_tokens(session_id, reason)` revokes every active
+token for a session with branch-role authorization and audit logging. Audit
+records contain session/token identifiers and expiry but never raw tokens or
+hashes.
+
+### Deferred
+
+- Guest token expiry duration, rotation, and cleanup remain `BLK-003`.
+- Device binding remains a bearer-token design limitation.
+- Session closure and full settlement remain blocked by billing rules.
+- RLS coverage manifest population remains owned by the testing infrastructure;
+  the security integration tests cover the key RLS paths but do not populate the
+  manifest. Populating it without per-table pgTAP tests would overstate
+  coverage, so it is deferred for Agent 3 coordination.
+- Direct RPC callers must map `RATE_LIMIT_EXCEEDED` to HTTP 429 themselves;
+  Edge Functions already return 429 with `Retry-After`.
+
 ## 8. Validation performed
 
-- All 17 migrations (11 Agent 1 + 6 service) applied cleanly in order to a
-  disposable PostgreSQL 18 database with mock `auth` functions and
-  Supabase-like `anon`, `authenticated`, and `service_role` roles.
+- All 24 migrations (11 Agent 1 + 13 service/remediation) applied cleanly in
+  order to a disposable PostgreSQL 18 database with mock `auth` functions and
+  Supabase-like `anon`, `authenticated`, and `service_role` roles, including a
+  run with pgcrypto installed in `public`.
 - Positive and negative checks passed for:
   - owner/admin/manager branch scope,
   - cross-branch denial,
@@ -194,9 +304,39 @@ order transition rules are blocked.
   - waitlist join, duplicate rejection, position, and cancellation,
   - platform-admin listing and organization suspend/reactivate,
   - registration and branch-creation idempotent replay.
+- Security remediation regression tests:
+  - timestamp offset normalization,
+  - Edge body-size and `Retry-After` handling,
+  - DB-backed rate limits including concurrent consumption,
+  - concurrent branch creation against a plan limit,
+  - session creation versus table and branch deactivation,
+  - revoked-QR rejection,
+  - suspended/pending-deletion authorization and guest-token behavior,
+  - SHA-256 idempotency fingerprint length and different-payload conflict,
+  - concurrent waitlist cancellation,
+  - waitlist join rate limiting,
+  - cross-tenant not-found consistency for tables, guest tokens, and waitlist,
+  - session-wide guest-token revocation and audit without token material,
+  - staff-only plan visibility, platform-admin plan visibility, and revoked helper execution,
+  - spoofed/duplicated/missing/malformed IPv4 and IPv6 client identities,
+  - strict timestamp validation for invalid dates, 24:00, leap days, six-digit fractions, and invalid offsets,
+  - organization suspension versus branch creation and guest-token validation,
+  - missing subscription fail-closed behavior,
+  - consistent `SUBSCRIPTION_RESTRICTED` / `ORGANIZATION_NOT_OPERATIONAL` codes,
+  - normalized menu/staff cross-tenant errors,
+  - normalized idempotency values,
+  - session-wide revocation versus concurrent token issuance,
+  - safe rate-limit bucket retention (active windows preserved, expired windows cleaned),
+  - concurrent shared organization operations not blocking each other,
+  - advisory organization lock serialization with suspension,
+  - customer UUID bucket hashing,
+  - `add_walk_in` cross-tenant not-found consistency,
+  - token validation versus session-wide revocation serialization.
 - TypeScript contracts typecheck and unit tests pass.
 - Deno type-checks the three Edge Functions.
 - Secret scan, blocker register, and RLS manifest static check pass.
+- Edge HTTP runtime, PostgREST RLS, and browser CORS remain unverified because
+  Docker/Edge HTTP is unavailable; those tests are not claimed as passed.
 
 ## 9. Blockers preserved
 

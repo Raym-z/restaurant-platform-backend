@@ -204,12 +204,24 @@ describe("guest contracts", () => {
 });
 
 describe("time contracts", () => {
-  it("accepts UTC instants and rejects offset timestamps", () => {
-    expect(UtcInstantSchema.safeParse("2026-11-08T10:00:00Z").success).toBe(
-      true,
+  it("normalizes UTC and offset timestamps to Z", () => {
+    expect(UtcInstantSchema.parse("2026-11-08T10:00:00Z")).toBe(
+      "2026-11-08T10:00:00.000000Z",
     );
-    expect(
-      UtcInstantSchema.safeParse("2026-11-08T10:00:00+07:00").success,
-    ).toBe(false);
+    expect(UtcInstantSchema.parse("2026-11-08T17:00:00+07:00")).toBe(
+      "2026-11-08T10:00:00.000000Z",
+    );
+    expect(UtcInstantSchema.parse("2026-11-08T10:00:00+00:00")).toBe(
+      "2026-11-08T10:00:00.000000Z",
+    );
+  });
+
+  it("rejects malformed or invalid timestamps", () => {
+    expect(UtcInstantSchema.safeParse("2026-11-08T10:00:00").success).toBe(
+      false,
+    );
+    expect(UtcInstantSchema.safeParse("2026-13-40T10:00:00Z").success).toBe(
+      false,
+    );
   });
 });

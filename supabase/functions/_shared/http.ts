@@ -50,20 +50,46 @@ export const jsonResponse = (
   const headers = corsHeaders(request, env);
   headers.set("Content-Type", "application/json; charset=utf-8");
   headers.set("Cache-Control", "no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
   return new Response(JSON.stringify(body), { status, headers });
 };
 
 export const readJsonBody = async (request: Request): Promise<unknown> => {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null) {
-    const parsed = Number.parseInt(contentLength, 10);
-    if (Number.isFinite(parsed) && parsed > MAX_BODY_BYTES) {
-      throw new AppError("VALIDATION_ERROR", "Request body is too large");
+  if (request.body === null) {
+    throw new AppError("VALIDATION_ERROR", "Request body is required");
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+
+      received += value.byteLength;
+      if (received > MAX_BODY_BYTES) {
+        await reader.cancel();
+        throw new AppError("VALIDATION_ERROR", "Request body is too large");
+      }
+
+      chunks.push(value);
     }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
 
   try {
-    return await request.json();
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     throw new AppError("VALIDATION_ERROR", "Request body must be valid JSON");
   }
@@ -83,12 +109,24 @@ export const errorResponse = (
   env: EdgeEnv | null,
 ): Response => {
   if (error instanceof AppError) {
-    return jsonResponse(
+    const response = jsonResponse(
       apiFailure(error.toPayload()),
       error.httpStatus,
       request,
       env,
     );
+
+    if (error.code === "RATE_LIMIT_EXCEEDED") {
+      const retryAfter = error.details?.retryAfterSeconds;
+      if (typeof retryAfter === "number" && Number.isFinite(retryAfter)) {
+        response.headers.set(
+          "Retry-After",
+          String(Math.max(1, Math.ceil(retryAfter))),
+        );
+      }
+    }
+
+    return response;
   }
 
   if (error instanceof ZodError) {

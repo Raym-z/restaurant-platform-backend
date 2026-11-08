@@ -1,10 +1,14 @@
 import { AppError } from "../../../src/lib/errors.ts";
+import { isTrustedIpHeader } from "./clientIdentity.ts";
 
 export type EdgeEnv = {
   supabaseUrl: string;
   serviceRoleKey: string;
   guestTokenTtlSeconds: number;
   corsAllowedOrigins: string[];
+  rateLimitHashSecret: string;
+  trustedClientIpHeader: string | null;
+  trustedProxyHops: number;
 };
 
 let cached: EdgeEnv | null = null;
@@ -35,6 +39,37 @@ export const getEdgeEnv = (): EdgeEnv => {
     );
   }
 
+  const hashSecret = required("RATE_LIMIT_HASH_SECRET");
+  if (hashSecret.length < 32) {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "RATE_LIMIT_HASH_SECRET must be at least 32 characters",
+    );
+  }
+
+  const headerRaw = Deno.env.get("TRUSTED_CLIENT_IP_HEADER");
+  const trustedHeader =
+    headerRaw === undefined || headerRaw.trim() === ""
+      ? null
+      : headerRaw.trim().toLowerCase();
+
+  if (trustedHeader !== null && !isTrustedIpHeader(trustedHeader)) {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "TRUSTED_CLIENT_IP_HEADER is not a supported header",
+    );
+  }
+
+  const hopsRaw = Deno.env.get("TRUSTED_PROXY_HOPS") ?? "1";
+  const hops = Number.parseInt(hopsRaw, 10);
+
+  if (trustedHeader !== null && (!Number.isInteger(hops) || hops < 1)) {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "TRUSTED_PROXY_HOPS must be a positive integer",
+    );
+  }
+
   const origins = (Deno.env.get("CORS_ALLOWED_ORIGINS") ?? "*")
     .split(",")
     .map((value) => value.trim())
@@ -45,6 +80,9 @@ export const getEdgeEnv = (): EdgeEnv => {
     serviceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
     guestTokenTtlSeconds: ttl,
     corsAllowedOrigins: origins.length > 0 ? origins : ["*"],
+    rateLimitHashSecret: hashSecret,
+    trustedClientIpHeader: trustedHeader,
+    trustedProxyHops: trustedHeader === null ? 0 : hops,
   };
 
   return cached;
