@@ -132,7 +132,9 @@ There is no ownership-transfer RPC or permission in the initial release.
   context and persisted order summaries.
 - `revoke_guest_token(token_id, reason)` — Owner/Admin/Manager branch role.
 
-Order submission and lifecycle mutations are blocked; see §9.
+M3 adds staff order submission, item modification, lifecycle transitions, and
+cancellation. Guest order submission remains out of scope; see
+`docs/m3-core-pos-operations.md`.
 
 ### Waitlist
 
@@ -180,8 +182,9 @@ the shared success/error envelopes. `GUEST_TOKEN_TTL_SECONDS` is required; there
 is no default because expiry duration is unapproved (`BLK-003`). Raw tokens are
 never logged or persisted.
 
-`guest-submit-order` is not implemented because menu availability semantics and
-order transition rules are blocked.
+`guest-submit-order` is not implemented. M3 implements the staff POS order path
+and documents its branch availability rule in
+`docs/m3-core-pos-operations.md`; guest ordering remains a separate milestone.
 
 ## 7.1 Security remediation behavior
 
@@ -287,10 +290,13 @@ hashes.
 
 ## 8. Validation performed
 
-- All 24 migrations (11 Agent 1 + 13 service/remediation) applied cleanly in
-  order to a disposable PostgreSQL 18 database with mock `auth` functions and
+- All 24 pre-M3 migrations (11 Agent 1 + 13 service/remediation) applied cleanly
+  in order to a disposable PostgreSQL 18 database with mock `auth` functions and
   Supabase-like `anon`, `authenticated`, and `service_role` roles, including a
   run with pgcrypto installed in `public`.
+- The five M3 migrations were parsed with the PostgreSQL 18 parser, but they were
+  not applied to a running database in the M3 environment because Docker/PostgreSQL
+  was unavailable. M3 database tests remain blocked until a real stack is available.
 - Positive and negative checks passed for:
   - owner/admin/manager branch scope,
   - cross-branch denial,
@@ -343,7 +349,7 @@ hashes.
 | Blocker   | Not implemented                                                                                  |
 | --------- | ------------------------------------------------------------------------------------------------ |
 | `BLK-001` | Tax/service/discount/rounding arithmetic; `preview_bill`, `finalize_bill`, payment recording     |
-| `BLK-002` | Unapproved order/item transitions, cancellation billing effects, KDS notification behavior       |
+| `BLK-002` | Item-level preparation transitions, cancellation billing effects, KDS notification behavior       |
 | `BLK-003` | Guest token expiry duration, rotation, cleanup schedule (TTL is caller/env supplied; no default) |
 | `BLK-004` | Waitlist restriction details, notification timing, no-show thresholds, manual reorder            |
 | `BLK-005` | Granular role-to-permission mappings; `role_permissions` remains empty                           |
@@ -353,13 +359,15 @@ hashes.
 
 Additional schema-level blockers:
 
-- Menu availability semantics (explicit opt-in vs default-available) are
-  unresolved, so menu queries/order submission are not implemented.
+- Menu availability semantics remain unresolved for public/guest menu queries.
+  M3's staff order path uses a documented explicit-override/default-available
+  rule in `docs/m3-core-pos-operations.md`.
 - Plan catalog, entitlements, and grace-period values are unresolved; only an
   active Free plan row is required for registration.
 - Staff invitation/activation flow is unresolved; no Auth-admin invitation Edge
   Function is implemented.
 - Platform exceptional-access scope vocabulary is unresolved.
-- Order display numbering is not implemented.
+- Per-branch order display numbering is not implemented. M3 adds a stable,
+  non-sequential `order_reference` for operational correlation.
 - Public menu access path is unresolved; no anonymous table grants exist.
 - Realtime publication is not configured; `BLK-008`.

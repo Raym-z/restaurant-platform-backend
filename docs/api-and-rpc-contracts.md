@@ -407,6 +407,7 @@ Suggested categories:
 - `GUEST_TOKEN_EXPIRED`
 - `GUEST_SESSION_CLOSED`
 - `GUEST_SESSION_NOT_FOUND`
+- `DINING_SESSION_NOT_FOUND`
 
 ### Orders
 
@@ -415,6 +416,7 @@ Suggested categories:
 - `ORDER_SUBMISSION_FAILED`
 - `ORDER_ALREADY_PROCESSED`
 - `ORDER_ITEM_UNAVAILABLE`
+- `ORDER_ITEM_NOT_FOUND`
 - `ORDER_MODIFICATION_NOT_ALLOWED`
 
 ### Billing and Payments
@@ -616,6 +618,11 @@ A table may have only one active dining session at a time.
 
 Closing the session releases the table for a future session.
 
+M3 implements the staff table/session read and lifecycle RPCs in
+[`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md), including
+availability, active-session reads, idempotent session opening, and guarded
+session closure.
+
 ### 8.5 POS — Orders and KDS
 
 | Operation                      | Mechanism               | Backend responsibility                            |
@@ -635,7 +642,7 @@ Closing the session releases the table for a future session.
 
 Order lifecycle:
 
-`Pending → Accepted → Preparing → Ready → Served`
+`Pending → Accepted → Preparing → Ready → Served → Completed`
 
 Cancellation is a separate terminal outcome where permitted.
 
@@ -650,6 +657,14 @@ Payment status is independent of order preparation status.
 Orders and items must not be silently overwritten after submission.
 
 Corrections and cancellations require appropriate permissions and audit records.
+
+M3 adds an explicit operational `completed` state after `served` and implements
+the approved transition matrix, staff order creation, item modification before
+preparation, idempotent creation, and audited cancellation. Order transitions
+cascade to non-cancelled items, and `served`/`completed` requires all such items
+to be served. Independent item-level KDS transitions remain deferred. Payment
+settlement remains independent. See
+[`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md).
 
 ### 8.6 POS — Billing and Payments
 

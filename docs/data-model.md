@@ -142,11 +142,10 @@ The initial proposed order lifecycle is:
 | Preparing | Kitchen preparation is underway.         |
 | Ready     | Preparation is complete.                 |
 | Served    | Delivered to the customer.               |
-| Cancelled | Cancelled before completion.             |
+| Completed | Operational work is finished.            |
+| Cancelled | Cancelled before operational completion. |
 
-The backend validates allowed transitions. Fulfillment status is separate from payment status; an order's preparation progress must not be used as a substitute for bill or payment state.
-
-Exact transition rules, including exceptional cancellation and item-level transitions, remain part of the detailed contract review.
+The backend validates allowed transitions. Fulfillment status is separate from payment status; an order's preparation progress must not be used as a substitute for bill or payment state. M3 adds the operational `completed` state and the approved order-level transition matrix; item-level preparation transitions and cancellation effects on bills remain deferred. See `docs/m3-core-pos-operations.md`.
 
 ## 6. Billing and Payment Domain
 

@@ -33,7 +33,9 @@ schemas shared by the backend, POS, ordering, and waitlist applications.
 
 - Billing arithmetic: tax, service charge, discounts, and rounding require
   explicit business approval before implementation.
-- Unapproved order transitions.
+- Item-level preparation transitions, cancellation billing effects, and KDS
+  notification behavior. Order-level transitions are published in
+  `order/status.ts` and implemented by M3.
 - Payment void, correction, and reopening workflows.
 - RLS policies, grants, and schema-dependent RPCs. These wait for Agent 1's
   merged schema baseline.

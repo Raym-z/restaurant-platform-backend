@@ -70,3 +70,8 @@ The POS staff interface may subscribe to queue changes for authorized branches. 
 ## 10. Pending decisions
 
 Exact channel names, event payloads, Supabase Realtime publication configuration, filtering strategy, and client synchronization implementation will be defined alongside the data model and contracts.
+
+M3 does not enable a publication for tables, dining sessions, or orders.
+Publication without an approved tenant/branch subscription design could expose
+cross-tenant records, so the existing `BLK-008` limitation remains in force.
+Clients must continue to read authoritative state through authorized RPCs.
