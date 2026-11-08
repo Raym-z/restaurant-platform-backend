@@ -993,6 +993,122 @@ describe("M3 order item modification and lifecycle", () => {
     expect(cancelled.payableSubtotalMinor).toBe(0);
   });
 
+  it("rejects direct terminal-state inserts that bypass the order RPC guards", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const menuItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Insert guard item",
+      basePriceMinor: 10000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+
+    const insertOrder = (options: {
+      status: string;
+      subtotalMinor?: number;
+      cancelledAt?: string | null;
+      cancelledByStaffId?: string | null;
+      cancellationReason?: string | null;
+    }) =>
+      admin.query(
+        `insert into public.orders
+           (organization_id, branch_id, dining_session_id, source, status,
+            currency_code, subtotal_minor, submitted_by_staff_id,
+            cancelled_at, cancelled_by_staff_id, cancellation_reason)
+         values ($1, $2, $3, 'staff', $4::public.order_status, 'IDR', $5, $6, $7, $8, $9)
+         returning id`,
+        [
+          fixture.organizationId,
+          branchId,
+          sessionId,
+          options.status,
+          options.subtotalMinor ?? 0,
+          managerFixture.staffId,
+          options.cancelledAt ?? null,
+          options.cancelledByStaffId ?? null,
+          options.cancellationReason ?? null,
+        ],
+      );
+
+    // A fulfilled terminal order cannot be inserted without active items.
+    await expectPgError(
+      insertOrder({ status: "completed" }),
+      "ORDER_INVALID_STATUS",
+    );
+    await expectPgError(
+      insertOrder({ status: "served" }),
+      "ORDER_INVALID_STATUS",
+    );
+
+    // A cancelled order must carry an actor and a non-empty reason.
+    await expectPgError(
+      insertOrder({
+        status: "cancelled",
+        subtotalMinor: 5000,
+        cancelledAt: new Date().toISOString(),
+      }),
+      "ORDER_INVALID_STATUS",
+    );
+    await expectPgError(
+      insertOrder({
+        status: "cancelled",
+        subtotalMinor: 5000,
+        cancelledAt: new Date().toISOString(),
+        cancelledByStaffId: managerFixture.staffId,
+        cancellationReason: "   ",
+      }),
+      "ORDER_INVALID_STATUS",
+    );
+
+    // Normal pending inserts remain valid, and the guard is not a blanket
+    // rejection of fully-attributed cancelled rows.
+    await expect(insertOrder({ status: "pending" })).resolves.toBeDefined();
+    await expect(
+      insertOrder({
+        status: "cancelled",
+        subtotalMinor: 5000,
+        cancelledAt: new Date().toISOString(),
+        cancelledByStaffId: managerFixture.staffId,
+        cancellationReason: "direct historical insert",
+      }),
+    ).resolves.toBeDefined();
+
+    // Normal RPC creation and cancellation still work after the guard lands.
+    const order = await createOrder(manager, sessionId, [
+      { menuItemId: menuItem.itemId, quantity: 1 },
+    ]);
+    expect(order.status).toBe("pending");
+
+    const cancelled = await cancelOrder(
+      manager,
+      String(order.orderId),
+      "normal cancellation",
+    );
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.cancelledByStaffId).toBe(managerFixture.staffId);
+    expect(cancelled.cancellationReason).toBe("normal cancellation");
+    expect(cancelled.subtotalMinor).toBe(10000);
+    expect(cancelled.payableSubtotalMinor).toBe(0);
+  });
+
   it("retains a cancelled order's subtotal as history and reports zero payable", async () => {
     const admin = await createClient();
     const manager = await createClient();

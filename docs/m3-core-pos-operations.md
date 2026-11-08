@@ -92,6 +92,19 @@ a newly added enum value in the same transaction that added it.
   - closing requires a timestamp and staff member;
   - closing is blocked while non-terminal orders remain.
 
+### `20261109140000_m3_order_insert_terminal_state_guard.sql`
+
+- Extracts terminal-state validation into
+  `private.assert_order_terminal_state(...)`.
+- Replaces `private.guard_order_status_transition()` so INSERT and UPDATE paths
+  use the same terminal-state helper.
+- Adds `orders_guard_insert_terminal_state`, a `BEFORE INSERT` trigger that
+  rejects a direct terminal insert lacking cancellation metadata
+  (timestamp/actor/reason) or fulfilled non-cancelled items.
+- Normal `pending` order creation is unaffected. Authenticated, anon, and
+  service-role clients have no direct `INSERT` privilege on `public.orders`; the
+  trigger is defense in depth for privileged write paths.
+
 ### `20261108110900_m3_pos_read_helpers.sql`
 
 Private `SECURITY DEFINER` helpers with `search_path = ''` for order, item,
@@ -346,18 +359,60 @@ re-reading through the authorized RPCs. Do not enable Realtime on `orders`,
 
 ## 12. M2 integration boundary
 
-M3 does not depend on M2 and does not modify role assignments. The M3 read helper
-added here (`private.assert_branch_history_access`) is additive and only checks
+M3 product migrations do not directly depend on M2.1 and do not modify role
+assignments. The M3 read helper added here
+(`private.assert_branch_history_access`) is additive and only checks
 organization-scoped assignments, so it remains valid before and after M2.1
 branch-scoped role assignments.
 
-M2.1 (`20261108120000_m2_branch_scoped_staff_roles.sql`) replaces
-`authz.has_branch_access`, `authz.has_branch_role`, and `authz.has_permission`
-with branch-aware versions and adds `staff_role_assignments.branch_id`. M3 only
-calls these helpers by their existing signatures, so the combined sequence
-`main -> M3 (110700-111100) -> M2.1 (120000)` applies cleanly. M3 explicit role
-arrays remain valid: organization-scoped roles keep organization-wide reach and
-branch-scoped roles are restricted to their assigned active branch.
+M2.1 is delivered by these migrations:
+
+- `20261108120000_m2_branch_scoped_staff_roles.sql` — adds
+  `staff_role_assignments.branch_id` and replaces `authz.has_branch_access`,
+  `authz.has_branch_role`, and `authz.has_permission` with branch-aware
+  versions.
+- `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` — concurrency-safe
+  branch-assignment creation, serialized revocation, the branch foreign-key
+  index, and internal-helper grant cleanup.
+- `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` — later M2
+  remediation for staff RPC concurrency, lock order, backfill locking, and
+  error normalization. This migration was present in the M2 worktree when this
+  boundary was re-verified; re-check the M2 branch before integration.
+
+M3 only calls the existing `authz` helper signatures, so the combined sequence
+applies cleanly. M3 explicit role arrays remain valid: organization-scoped
+roles keep organization-wide reach and branch-scoped roles are restricted to
+their assigned active branch.
+
+The following combined orders were verified, each with the later
+`20261109130000` M2 remediation applied after the follow-up migration:
+
+1. Main → M3 (`20261108110700`–`20261108111100` and
+   `20261109140000_m3_order_insert_terminal_state_guard.sql`) → M2
+   `20261108120000` → M2 `20261109120000` → M2 `20261109130000`.
+2. Main → M2 `20261108120000` → M2 `20261109120000` → M2 `20261109130000` → M3
+   (`20261108110700`–`20261108111100` and `20261109140000`).
+3. Main → M2 `20261108120000` → M3 (`20261108110700`–`20261108111100` and
+   `20261109140000`) → M2 `20261109120000` → M2 `20261109130000`.
+
+The naturally sorted combined order was also verified: Main → M3
+`20261108110700`–`20261108111100` → M2 original → M2 follow-up → M2 later
+remediation → M3 `20261109140000`. Because the new M3 guard sorts after the M2
+migrations, a deployment that applies migrations only in filename order runs it
+last; it has no M2 dependency and is safe in that position.
+
+M3 integration test fixtures do depend on the branch-scoped role schema from
+M2.1: `tests/integration/security/helpers.ts` must use the M2 version that
+writes `staff_role_assignments.branch_id` for branch-scoped assignments. The M3
+branch still carries an older helper that omits `branch_id`, so it cannot
+create branch-scoped role fixtures against the M2.1 schema. Carry the M2 helper
+into the combined integration; M3 product migrations themselves do not need the
+helper change.
+
+The independent review was performed against M2.1 commit `fd61e00`, which
+includes `20261108120000` and `20261109120000`. Later M2 remediation may
+supersede that commit. Do not treat this section as a pin to the newest M2
+commit; verify the M2 branch and its migration set at integration time.
 
 Future branch-specific role semantics should be integrated only inside the
 existing `authz` helper layer (`has_branch_role`, `has_branch_access`,
