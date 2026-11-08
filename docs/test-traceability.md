@@ -37,6 +37,14 @@ and Agent 2 implementations land.
 | Duplicate active assignment and revoked replacement | both files above |
 | One-active-Owner invariant retained | `supabase/tests/database/010_staff_branch_roles.test.sql` |
 | Legacy backfill split and fail-closed behavior | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Revoked legacy row with no assignment history fails closed | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Branch-scoped Admin denied organization-level operations | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Branch assignment without a role grants no access | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Direct branch role insert and branch move maintain assignments | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Branch-aware `has_permission` behavior | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Grant/revoke audit events include branch context | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Concurrent different-role grants at one branch both succeed | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Concurrent revocations serialize and write one audit event | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
 | Contract requires branch for branch-scoped grants | `src/contracts/common/contracts.test.ts` |
 
 ## Special-attention coverage

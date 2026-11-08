@@ -6,7 +6,7 @@
 
 begin;
 
-select plan(38);
+select plan(63);
 
 select has_column(
   'public',
@@ -55,7 +55,8 @@ insert into public.branches (id, organization_id, name, timezone)
 values
   (tests.uuid_for('m21-branch-a'), tests.uuid_for('m21-org'), 'Branch A', 'Asia/Jakarta'),
   (tests.uuid_for('m21-branch-b'), tests.uuid_for('m21-org'), 'Branch B', 'Asia/Jakarta'),
-  (tests.uuid_for('m21-branch-c'), tests.uuid_for('m21-org'), 'Branch C', 'Asia/Jakarta');
+  (tests.uuid_for('m21-branch-c'), tests.uuid_for('m21-org'), 'Branch C', 'Asia/Jakarta'),
+  (tests.uuid_for('m21-branch-d'), tests.uuid_for('m21-org'), 'Branch D', 'Asia/Jakarta');
 
 update public.branches
    set status = 'inactive',
@@ -86,7 +87,10 @@ values
   (tests.uuid_for('m21-org-admin-auth')),
   (tests.uuid_for('m21-constraint-auth')),
   (tests.uuid_for('m21-legacy-auth')),
-  (tests.uuid_for('m21-unassigned-auth'));
+  (tests.uuid_for('m21-unassigned-auth')),
+  (tests.uuid_for('m21-branch-admin-auth')),
+  (tests.uuid_for('m21-assignment-only-auth')),
+  (tests.uuid_for('m21-unassigned-revoked-auth'));
 
 insert into public.staff_profiles
   (id, auth_user_id, organization_id, display_name, status, activated_at)
@@ -99,7 +103,10 @@ values
   (tests.uuid_for('m21-org-admin-staff'), tests.uuid_for('m21-org-admin-auth'), tests.uuid_for('m21-org'), 'Org admin', 'active', now()),
   (tests.uuid_for('m21-constraint-staff'), tests.uuid_for('m21-constraint-auth'), tests.uuid_for('m21-org'), 'Constraint', 'active', now()),
   (tests.uuid_for('m21-legacy-staff'), tests.uuid_for('m21-legacy-auth'), tests.uuid_for('m21-org'), 'Legacy', 'active', now()),
-  (tests.uuid_for('m21-unassigned-staff'), tests.uuid_for('m21-unassigned-auth'), tests.uuid_for('m21-org'), 'Unassigned', 'active', now());
+  (tests.uuid_for('m21-unassigned-staff'), tests.uuid_for('m21-unassigned-auth'), tests.uuid_for('m21-org'), 'Unassigned', 'active', now()),
+  (tests.uuid_for('m21-branch-admin-staff'), tests.uuid_for('m21-branch-admin-auth'), tests.uuid_for('m21-org'), 'Branch admin', 'active', now()),
+  (tests.uuid_for('m21-assignment-only-staff'), tests.uuid_for('m21-assignment-only-auth'), tests.uuid_for('m21-org'), 'Assignment only', 'active', now()),
+  (tests.uuid_for('m21-unassigned-revoked-staff'), tests.uuid_for('m21-unassigned-revoked-auth'), tests.uuid_for('m21-org'), 'Revoked unassigned', 'active', now());
 
 -- Branch assignments are inserted before branch-scoped roles so the
 -- role/assignment consistency trigger sees an existing active row.
@@ -112,7 +119,9 @@ values
   (tests.uuid_for('m21-inactive-branch-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-c')),
   (tests.uuid_for('m21-constraint-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-a')),
   (tests.uuid_for('m21-legacy-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-a')),
-  (tests.uuid_for('m21-legacy-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-b'));
+  (tests.uuid_for('m21-legacy-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-b')),
+  (tests.uuid_for('m21-branch-admin-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-a')),
+  (tests.uuid_for('m21-assignment-only-staff'), tests.uuid_for('m21-org'), tests.uuid_for('m21-branch-a'));
 
 insert into public.staff_role_assignments
   (staff_id, organization_id, role_code, scope_type, branch_id)
@@ -124,6 +133,7 @@ values
   (tests.uuid_for('m21-inactive-staff'), tests.uuid_for('m21-org'), 'manager', 'branch', tests.uuid_for('m21-branch-a')),
   (tests.uuid_for('m21-inactive-branch-staff'), tests.uuid_for('m21-org'), 'manager', 'branch', tests.uuid_for('m21-branch-c')),
   (tests.uuid_for('m21-org-admin-staff'), tests.uuid_for('m21-org'), 'admin', 'organization', null),
+  (tests.uuid_for('m21-branch-admin-staff'), tests.uuid_for('m21-org'), 'admin', 'branch', tests.uuid_for('m21-branch-a')),
   (tests.uuid_for('m21-constraint-staff'), tests.uuid_for('m21-org'), 'manager', 'branch', tests.uuid_for('m21-branch-a'));
 
 -- The revoked staff member's role insert created the active branch assignment;
@@ -309,6 +319,115 @@ select ok(
 );
 
 select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-branch-admin-auth'));
+
+select ok(
+  not authz.has_org_role(array['owner', 'admin']::text[]),
+  'branch-scoped Admin has no organization administrator authority'
+);
+
+select ok(
+  authz.has_branch_role(tests.uuid_for('m21-branch-a'), array['admin']::text[]),
+  'branch-scoped Admin has admin authority at its own branch'
+);
+
+select ok(
+  not authz.has_branch_role(tests.uuid_for('m21-branch-b'), array['admin']::text[]),
+  'branch-scoped Admin has no admin authority at another branch'
+);
+
+select ok(
+  not authz.has_branch_access(tests.uuid_for('m21-branch-b')),
+  'branch-scoped Admin cannot access another branch'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-assignment-only-auth'));
+
+select ok(
+  not authz.has_branch_access(tests.uuid_for('m21-branch-a')),
+  'a branch assignment without a role grants no branch access'
+);
+
+select ok(
+  not authz.has_branch_role(tests.uuid_for('m21-branch-a'), array['cashier']::text[]),
+  'a branch assignment without a role grants no branch role'
+);
+
+select ok(
+  (select count(*) = 0 from public.branches),
+  'a branch assignment without a role exposes no branches'
+);
+
+select tests.clear_auth();
+
+insert into public.staff_role_assignments
+  (staff_id, organization_id, role_code, scope_type, branch_id)
+values
+  (tests.uuid_for('m21-assignment-only-staff'), tests.uuid_for('m21-org'),
+   'cashier', 'branch', tests.uuid_for('m21-branch-b'));
+
+select ok(
+  exists (
+    select 1
+    from public.staff_branch_assignments
+    where staff_id = tests.uuid_for('m21-assignment-only-staff')
+      and branch_id = tests.uuid_for('m21-branch-b')
+      and revoked_at is null
+  ),
+  'a direct branch role insert creates the matching branch assignment'
+);
+
+select tests.authenticate_as(tests.uuid_for('m21-assignment-only-auth'));
+
+select ok(
+  authz.has_branch_role(tests.uuid_for('m21-branch-b'), array['cashier']::text[]),
+  'a directly inserted branch role resolves at its branch'
+);
+
+select tests.clear_auth();
+
+update public.staff_role_assignments
+   set branch_id = tests.uuid_for('m21-branch-d')
+ where staff_id = tests.uuid_for('m21-assignment-only-staff')
+   and role_code = 'cashier'
+   and branch_id = tests.uuid_for('m21-branch-b')
+   and revoked_at is null;
+
+select ok(
+  exists (
+    select 1
+    from public.staff_branch_assignments
+    where staff_id = tests.uuid_for('m21-assignment-only-staff')
+      and branch_id = tests.uuid_for('m21-branch-d')
+      and revoked_at is null
+  ),
+  'moving a branch role to a new branch creates the matching branch assignment'
+);
+
+select tests.authenticate_as(tests.uuid_for('m21-assignment-only-auth'));
+
+select ok(
+  authz.has_branch_role(tests.uuid_for('m21-branch-d'), array['cashier']::text[]),
+  'the moved branch role resolves at the new branch'
+);
+
+select ok(
+  not authz.has_branch_role(tests.uuid_for('m21-branch-b'), array['cashier']::text[]),
+  'the moved branch role no longer resolves at the old branch'
+);
+
+select ok(
+  authz.has_branch_access(tests.uuid_for('m21-branch-d')),
+  'the moved branch role grants access at the new branch'
+);
+
+select ok(
+  not authz.has_branch_access(tests.uuid_for('m21-branch-b')),
+  'the old branch assignment alone no longer grants access after the role moves'
+);
+
+select tests.clear_auth();
 select tests.authenticate_as(tests.uuid_for('m21-inactive-auth'));
 
 select ok(
@@ -390,6 +509,90 @@ select ok(
 
 select tests.clear_auth();
 
+-- Permission checks ---------------------------------------------------------
+-- Seed temporary permission mappings inside this transaction. They are test
+-- data, not approved production permission mappings, and roll back with the
+-- surrounding test transaction.
+
+insert into public.permissions (code, description)
+values
+  ('m21.permission.manager', 'M2.1 reviewer test manager permission'),
+  ('m21.permission.admin', 'M2.1 reviewer test admin permission');
+
+insert into public.role_permissions (role_code, permission_code)
+values
+  ('manager', 'm21.permission.manager'),
+  ('admin', 'm21.permission.admin');
+
+select tests.authenticate_as(tests.uuid_for('m21-multi-auth'));
+
+select ok(
+  authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-a')),
+  'branch Manager permission resolves at the assigned branch'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-b')),
+  'branch Manager permission does not resolve at another branch'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.admin', tests.uuid_for('m21-branch-a')),
+  'branch Manager does not gain Admin permission'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-org-admin-auth'));
+
+select ok(
+  authz.has_permission('m21.permission.admin', tests.uuid_for('m21-branch-a')),
+  'organization Admin permission resolves at Branch A'
+);
+
+select ok(
+  authz.has_permission('m21.permission.admin', tests.uuid_for('m21-branch-b')),
+  'organization Admin permission resolves at Branch B'
+);
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-a')),
+  'organization Admin does not gain Manager permission'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-assignment-only-auth'));
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-a')),
+  'a branch role without the permission mapping grants no permission'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-inactive-auth'));
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-a')),
+  'inactive staff have no branch permission'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-inactive-branch-auth'));
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-c')),
+  'inactive branches deny branch permissions'
+);
+
+select tests.clear_auth();
+select tests.authenticate_as(tests.uuid_for('m21-revoked-auth'));
+
+select ok(
+  not authz.has_permission('m21.permission.manager', tests.uuid_for('m21-branch-a')),
+  'a revoked branch assignment denies branch permission'
+);
+
+select tests.clear_auth();
+
 -- Legacy backfill ----------------------------------------------------------
 -- Relax the new invariant temporarily to recreate legacy rows, then prove the
 -- production backfill helper splits them deterministically and fails closed.
@@ -456,6 +659,22 @@ select throws_ok(
   'P0001',
   'LEGACY_BRANCH_ROLE_UNASSIGNED',
   'an unassigned legacy branch role fails closed instead of inventing access'
+);
+
+delete from public.staff_role_assignments
+ where staff_id = tests.uuid_for('m21-unassigned-staff');
+
+insert into public.staff_role_assignments
+  (staff_id, organization_id, role_code, scope_type, branch_id, revoked_at)
+values
+  (tests.uuid_for('m21-unassigned-revoked-staff'), tests.uuid_for('m21-org'),
+   'cashier', 'branch', null, now());
+
+select throws_ok(
+  'select private.backfill_legacy_branch_role_assignments()',
+  'P0001',
+  'LEGACY_BRANCH_ROLE_UNASSIGNED',
+  'a revoked legacy branch role with no assignment history fails closed'
 );
 
 select * from finish();

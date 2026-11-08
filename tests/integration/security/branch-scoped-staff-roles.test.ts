@@ -568,3 +568,285 @@ describe("staff role RPC branch handling", () => {
     );
   });
 });
+
+describe("branch-scoped Admin containment", () => {
+  it("denies organization-level operations to a branch-scoped Admin", async () => {
+    const admin = await createClient();
+    const worker = await createClient();
+    track(admin, worker);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 2 });
+    const [branchA, branchB] = fixture.branchIds;
+    const branchAdmin = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "admin",
+      scope: "branch",
+      branchIds: [branchA!],
+    });
+    const target = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "cashier",
+      scope: "branch",
+      branchIds: [branchA!],
+    });
+
+    await authenticateAs(worker, branchAdmin.authUserId);
+
+    await expectPgError(
+      worker.query("select public.create_branch($1, $2, $3) as result", [
+        fixture.organizationId,
+        "Forbidden branch",
+        "Asia/Jakarta",
+      ]),
+      "PERMISSION_DENIED",
+    );
+
+    await expectPgError(
+      worker.query("select public.update_organization($1, $2) as result", [
+        fixture.organizationId,
+        "Forbidden rename",
+      ]),
+      "PERMISSION_DENIED",
+    );
+
+    await expectPgError(
+      worker.query("select public.assign_staff_branch($1, $2) as result", [
+        target.staffId,
+        branchA!,
+      ]),
+      "PERMISSION_DENIED",
+    );
+
+    await expectPgError(
+      worker.query(
+        "select public.grant_staff_role($1, 'cashier', 'branch', null, $2) as result",
+        [target.staffId, branchA!],
+      ),
+      "PERMISSION_DENIED",
+    );
+
+    await expectPgError(
+      worker.query("select public.deactivate_branch($1, $2) as result", [
+        branchB!,
+        "Not this branch",
+      ]),
+      "PERMISSION_DENIED",
+    );
+  });
+});
+
+describe("concurrent branch role grants", () => {
+  it("allows different roles at the same branch to be granted concurrently", async () => {
+    const admin = await createClient();
+    const ownerA = await createClient();
+    const ownerB = await createClient();
+    track(admin, ownerA, ownerB);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const authUserId = await createAuthUser(admin);
+    const staffId = randomUUID();
+
+    await admin.query(
+      `insert into public.staff_profiles
+         (id, auth_user_id, organization_id, display_name, status, activated_at)
+       values ($1, $2, $3, 'Concurrent grants', 'active', now())`,
+      [staffId, authUserId, fixture.organizationId],
+    );
+
+    await authenticateAs(ownerA, fixture.ownerAuthUserId);
+    await authenticateAs(ownerB, fixture.ownerAuthUserId);
+
+    const results = await Promise.allSettled([
+      ownerA.query<{ result: unknown }>(
+        "select public.grant_staff_role($1, 'manager', 'branch', null, $2) as result",
+        [staffId, branchId],
+      ),
+      ownerB.query<{ result: unknown }>(
+        "select public.grant_staff_role($1, 'cashier', 'branch', null, $2) as result",
+        [staffId, branchId],
+      ),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+    ]);
+
+    const roles = await admin.query<{ role_code: string }>(
+      `select role_code
+         from public.staff_role_assignments
+        where staff_id = $1
+          and revoked_at is null
+        order by role_code`,
+      [staffId],
+    );
+    expect(roles.rows.map((row) => row.role_code)).toEqual([
+      "cashier",
+      "manager",
+    ]);
+
+    const assignments = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.staff_branch_assignments
+        where staff_id = $1
+          and branch_id = $2
+          and revoked_at is null`,
+      [staffId, branchId],
+    );
+    expect(Number(assignments.rows[0]!.count)).toBe(1);
+  });
+});
+
+describe("role audit branch context", () => {
+  it("records the branch on role grant and revocation events", async () => {
+    const admin = await createClient();
+    const owner = await createClient();
+    track(admin, owner);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const staff = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "cashier",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+
+    const grant = await owner.query<{
+      result: { assignmentId: string; branchId: string };
+    }>(
+      "select public.grant_staff_role($1, 'manager', 'branch', 'audit grant', $2) as result",
+      [staff.staffId, branchId],
+    );
+    const assignmentId = grant.rows[0]!.result.assignmentId;
+
+    const grantAudit = await admin.query<{
+      branch_id: string | null;
+      metadata_branch: string | null;
+      scope_type: string | null;
+    }>(
+      `select branch_id,
+              metadata ->> 'branch_id' as metadata_branch,
+              metadata ->> 'scope_type' as scope_type
+         from public.audit_events
+        where action = 'staff.role_granted'
+          and target_id = $1
+        order by created_at desc
+        limit 1`,
+      [staff.staffId],
+    );
+
+    expect(grantAudit.rows[0]).toMatchObject({
+      branch_id: branchId,
+      metadata_branch: branchId,
+      scope_type: "branch",
+    });
+
+    const revoke = await owner.query<{
+      result: { branchId: string; status: string };
+    }>("select public.revoke_staff_role($1, 'audit revoke') as result", [
+      assignmentId,
+    ]);
+
+    expect(revoke.rows[0]!.result).toMatchObject({
+      branchId,
+      status: "revoked",
+    });
+
+    const revokeAudit = await admin.query<{
+      branch_id: string | null;
+      metadata_branch: string | null;
+      scope_type: string | null;
+    }>(
+      `select branch_id,
+              metadata ->> 'branch_id' as metadata_branch,
+              metadata ->> 'scope_type' as scope_type
+         from public.audit_events
+        where action = 'staff.role_revoked'
+          and target_id = $1
+        order by created_at desc
+        limit 1`,
+      [staff.staffId],
+    );
+
+    expect(revokeAudit.rows[0]).toMatchObject({
+      branch_id: branchId,
+      metadata_branch: branchId,
+      scope_type: "branch",
+    });
+  });
+});
+
+describe("concurrent role revocation", () => {
+  it("serializes revocations and writes a single audit event", async () => {
+    const admin = await createClient();
+    const ownerA = await createClient();
+    const ownerB = await createClient();
+    track(admin, ownerA, ownerB);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const authUserId = await createAuthUser(admin);
+    const staffId = randomUUID();
+
+    await admin.query(
+      `insert into public.staff_profiles
+         (id, auth_user_id, organization_id, display_name, status, activated_at)
+       values ($1, $2, $3, 'Concurrent revokes', 'active', now())`,
+      [staffId, authUserId, fixture.organizationId],
+    );
+    await admin.query(
+      `insert into public.staff_role_assignments
+         (staff_id, organization_id, role_code, scope_type, branch_id)
+       values ($1, $2, 'manager', 'branch', $3)`,
+      [staffId, fixture.organizationId, branchId],
+    );
+
+    const assignment = await admin.query<{ id: string }>(
+      `select id
+         from public.staff_role_assignments
+        where staff_id = $1
+          and role_code = 'manager'
+          and revoked_at is null`,
+      [staffId],
+    );
+    const assignmentId = assignment.rows[0]!.id;
+
+    await authenticateAs(ownerA, fixture.ownerAuthUserId);
+    await authenticateAs(ownerB, fixture.ownerAuthUserId);
+
+    const results = await Promise.allSettled([
+      ownerA.query<{ result: { status: string } }>(
+        "select public.revoke_staff_role($1, 'concurrent A') as result",
+        [assignmentId],
+      ),
+      ownerB.query<{ result: { status: string } }>(
+        "select public.revoke_staff_role($1, 'concurrent B') as result",
+        [assignmentId],
+      ),
+    ]);
+
+    const statuses = results
+      .map((result) => {
+        if (result.status === "rejected") {
+          throw result.reason;
+        }
+        return result.value.rows[0]!.result.status;
+      })
+      .sort();
+
+    expect(statuses).toEqual(["already_revoked", "revoked"]);
+
+    const audit = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.audit_events
+        where action = 'staff.role_revoked'
+          and target_id = $1`,
+      [staffId],
+    );
+    expect(Number(audit.rows[0]!.count)).toBe(1);
+  });
+});

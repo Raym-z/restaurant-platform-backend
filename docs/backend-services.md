@@ -28,6 +28,7 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108110500_security_remediation_error_consistency_menu_staff.sql` | Cross-tenant not-found normalization for menu and staff administration RPCs                                                             |
 | `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
 | `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
+| `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`                 | Conflict-safe branch-assignment consistency trigger, serialized role revocation, branch/organization FK index                          |
 
 Agent 1 migrations are never edited.
 
@@ -134,8 +135,29 @@ There is no ownership-transfer RPC or permission in the initial release.
 Branch-scoped authorization still requires both the role row and an active
 branch assignment. A database trigger records the branch assignment whenever
 an active branch-scoped role is inserted, so direct SQL and RPC provisioning
-remain consistent. Revoking the branch assignment denies access even while the
-role row remains active.
+remain consistent. The trigger uses `ON CONFLICT DO NOTHING` against the active
+branch-assignment unique index, so concurrent grants of different roles at the
+same branch do not produce a false role conflict. Concurrent revocations lock
+the assignment row and write a single audit event.
+
+**Lifecycle semantics:** revoking a branch assignment is a suspension, not a
+permanent role removal. The role row remains active but is denied while the
+assignment is revoked. Re-assigning the same branch restores that still-active
+role. To remove access permanently, revoke the role assignment itself (and
+optionally the branch assignment). The same applies to branch deactivation: a
+role on an inactive branch is inert and becomes effective again if the branch
+is reactivated.
+
+**Assigning a branch does not grant a role.** `assign_staff_branch` only
+records the branch assignment; it does not extend an existing branch-scoped
+role to the newly assigned branch. Grant the role for that branch explicitly.
+A branch assignment without any matching role grants no authorization and no
+branch visibility.
+
+**Inactive-branch grants:** `grant_staff_role` validates organization
+membership but does not currently reject inactive branches. A branch role
+granted on an inactive branch is inert until the branch is reactivated. Treat
+this as pre-provisioning; do not present it as active access in the POS UI.
 
 ### Menu and tables
 

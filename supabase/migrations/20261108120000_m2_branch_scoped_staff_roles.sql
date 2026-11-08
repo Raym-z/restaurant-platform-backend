@@ -80,7 +80,7 @@ begin
           v_assignment.id,
           v_assignment.staff_id
         ),
-        hint = 'Create the intended staff_branch_assignments or revoke the legacy assignment before applying this migration. Never add a branch merely to make the row fit.';
+        hint = 'For an active assignment, create the intended staff_branch_assignments or revoke it. For an already-revoked assignment with no historical branch assignment, archive or delete the inert row with explicit approval. Never add a branch merely to make the row fit.';
     end if;
 
     update public.staff_role_assignments
@@ -446,7 +446,7 @@ comment on function authz.has_permission(text, uuid) is
 
 -- Role assignment RPC. p_branch_id is appended so existing organization-scoped
 -- callers that pass p_reason positionally keep working. Branch-scoped callers
--- must supply p_branch_id; the ensure trigger below records the matching active
+-- must supply p_branch_id; the ensure trigger above records the matching active
 -- staff_branch_assignment when it does not already exist. The branch assignment
 -- remains the access gate and the role assignment remains the permission grant.
 drop function if exists public.grant_staff_role(

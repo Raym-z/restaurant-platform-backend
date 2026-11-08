@@ -65,6 +65,8 @@ Associates staff with the branches they may access and remains a required gate f
 - Owner access is organization-wide.
 - Manager, Cashier, and Kitchen Staff access is limited to the specific branch assigned on each role row, and requires an active branch assignment for that branch.
 - Admin access may be organization-wide or limited to a specific branch, according to the explicit scope assigned to that Admin.
+- A branch assignment by itself grants no role and no branch visibility.
+- Revoking a branch assignment suspends access while the role row remains active; re-assigning the branch restores that role. Permanent removal requires revoking the role assignment.
 
 ### Platform Admin Identity
 

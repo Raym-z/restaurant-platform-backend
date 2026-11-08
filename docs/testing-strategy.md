@@ -39,6 +39,11 @@ Host/Queue Staff is not part of the initial release and must not appear in
 fixtures, seed data, or tests. Granular permission mappings beyond documented
 role scope are blocked (`BLK-005`).
 
+Tests must distinguish a branch assignment from a role assignment: a branch
+assignment alone grants no role or branch visibility. Branch-assignment
+revocation suspends access while the role row remains active; re-assigning the
+branch restores the role, so permanent removal requires revoking the role.
+
 ## 4. Test layers and tools
 
 | Layer | Tool | Scope |

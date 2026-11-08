@@ -47,6 +47,15 @@ branch assignments before the new uniqueness and check constraints are
 enforced. The five canonical roles and the one-active-Owner invariant are
 unchanged.
 
+A follow-up migration, `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`,
+makes the branch-assignment consistency trigger conflict-safe for concurrent
+grants, serializes concurrent revocations, adds the branch/organization FK
+index, and removes unnecessary execute grants on internal helpers. Branch
+assignment revocation is a suspension: re-assigning the branch restores an
+otherwise active branch-scoped role. Permanent removal requires revoking the
+role. See `docs/schema/database-foundation.md` §5 for preflight, locking,
+backup, and recovery guidance for the one-way legacy backfill.
+
 **Outcome:** Secure access foundation.
 
 ### Phase 5: Restaurant configuration

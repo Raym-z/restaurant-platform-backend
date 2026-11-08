@@ -580,8 +580,8 @@ A restricted organization cannot create or modify branches.
 | Invite staff         | Edge Function + RPC | Trusted invitation workflow and database membership creation                    |
 | Create staff account | Edge Function + RPC | Coordinate Auth identity and organization membership                            |
 | Update staff profile | RPC                 | Validate permissions and update allowed fields                                  |
-| Assign roles         | RPC                 | Validate assignable roles and actor permissions                                 |
-| Assign branches      | RPC                 | Validate organization membership and branch scope                               |
+| Assign roles         | RPC                 | Validate assignable roles, explicit scope/branch, and actor permissions       |
+| Assign branches      | RPC                 | Validate organization membership and branch scope; does not grant a role       |
 | Deactivate staff     | RPC                 | Revoke or restrict organization access without destroying historical references |
 | Reactivate staff     | RPC                 | Restore access after permission and account checks                              |
 
@@ -591,7 +591,7 @@ Never allow a frontend to assign itself Owner, Admin, or Platform Admin privileg
 
 Role and branch assignment changes must be audited.
 
-Assigning a branch role records the requested `branch_id` on the role row and ensures an active branch assignment exists for the same staff member and branch. Branch assignments still grant no permission by themselves; revoking one removes branch access even while a role row remains active. Different roles may be assigned at different branches for the same staff member.
+Assigning a branch role records the requested `branch_id` on the role row and ensures an active branch assignment exists for the same staff member and branch. Branch assignments still grant no permission by themselves; revoking one removes branch access even while a role row remains active. Re-assigning the same branch restores that still-active role, so a branch-assignment revocation is a suspension, not a permanent removal; revoke the role assignment for permanent removal. Assigning a branch on its own does not extend an existing branch-scoped role to that branch; grant the role for the branch explicitly. A role granted on an inactive branch is inert until the branch is reactivated. Different roles may be assigned at different branches for the same staff member.
 
 ### 8.3 POS — Menu Management
 

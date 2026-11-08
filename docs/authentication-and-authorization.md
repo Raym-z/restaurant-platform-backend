@@ -41,6 +41,8 @@ Role names are fixed for the initial release; backend permissions must be granul
 
 Each role assignment carries its scope explicitly. Branch-scoped assignments include the branch identifier; organization-scoped assignments do not. A staff member may hold different roles at different branches, for example Manager at Branch 1 and Cashier at Branch 2. A role assigned at Branch 1 never grants that role at Branch 2. Branch-scoped authorization requires both the branch-specific role assignment and an active branch assignment for that branch. Revoked assignments, inactive staff, and inactive branches grant no access.
 
+Revoking a branch assignment suspends access; the branch-scoped role row remains active, and re-assigning the same branch restores that role. To remove access permanently, revoke the role assignment as well. Assigning a branch does not itself grant a role; each role must be granted for the branch explicitly. A branch role granted on an inactive branch is inert until the branch is reactivated.
+
 ## 5. Customer authorization
 
 Customer operations must be limited to the authenticated customer's own records, with any additional access explicitly defined. A customer must not be able to retrieve another customer's queue entries or profile by changing an identifier. Customer identity never grants staff or organization-management permissions.

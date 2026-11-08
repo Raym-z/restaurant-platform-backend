@@ -72,7 +72,7 @@ RLS is enabled on all `public` tables, including reference/lookup tables. No pol
 
 Agent 2 migrations should use later timestamps and merge after the schema. Do not edit applied migrations.
 
-M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5.
+M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5. The follow-up `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` makes the consistency trigger conflict-safe, serializes concurrent revocations, and adds the branch/organization FK index.
 
 ## 4. Tenant consistency
 
@@ -139,33 +139,84 @@ A staff member may therefore be Manager at Branch A and Cashier at Branch B, but
 
 ### Legacy branch-role backfill
 
-Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically:
+Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically. A follow-up migration, `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`, makes the branch-assignment consistency trigger conflict-safe and serializes concurrent revocations.
 
 1. For each legacy active assignment, its target branches are the staff member's active `staff_branch_assignments`.
-2. The original row receives the first branch and additional rows are inserted for the remaining branches, preserving actor, reason, timestamps, and revocation state.
+2. The original row receives the first branch and additional rows are inserted for the remaining branches, preserving the assigned actor, reason, `assigned_at`, `created_at`, and revocation state. The original row's `updated_at` is refreshed by the table's `updated_at` trigger; duplicate rows copy the pre-migration `updated_at`.
 3. This preserves the exact effective branch reach of the old model. It never adds a branch.
-4. A legacy row with no branch assignment cannot be represented without inventing access. The migration raises `LEGACY_BRANCH_ROLE_UNASSIGNED` and rolls back.
+4. A legacy row with no usable branch assignment cannot be represented without inventing access. The migration raises `LEGACY_BRANCH_ROLE_UNASSIGNED` and rolls back.
 
-Apply the migration inside a transaction, as the Supabase CLI does. Running it with per-statement autocommit could leave the new column in place even though the backfill aborted.
+#### Pre-flight classification
 
 Before applying the migration to a database that may contain legacy branch-scoped assignments, run:
 
 ```sql
-select sra.id,
-       sra.staff_id,
-       sra.role_code,
-       sra.revoked_at,
-       count(sba.id) filter (where sba.revoked_at is null) as active_branch_assignments
-  from public.staff_role_assignments sra
-  left join public.staff_branch_assignments sba
-    on sba.staff_id = sra.staff_id
-   and sba.organization_id = sra.organization_id
- where sra.scope_type = 'branch'
- group by sra.id, sra.staff_id, sra.role_code, sra.revoked_at
- order by sra.staff_id, sra.role_code;
+with assignment_stats as (
+  select sra.id,
+         sra.staff_id,
+         sra.role_code,
+         sra.revoked_at as role_revoked_at,
+         sp.status as staff_status,
+         count(sba.id) filter (where sba.revoked_at is null) as active_branch_assignments,
+         count(sba.id) as historical_branch_assignments
+    from public.staff_role_assignments sra
+    join public.staff_profiles sp on sp.id = sra.staff_id
+    left join public.staff_branch_assignments sba
+      on sba.staff_id = sra.staff_id
+     and sba.organization_id = sra.organization_id
+   where sra.scope_type = 'branch'
+   group by sra.id, sra.staff_id, sra.role_code, sra.revoked_at, sp.status
+)
+select *,
+       case
+         when role_revoked_at is not null and historical_branch_assignments = 0
+           then 'revoked_no_history'
+         when role_revoked_at is not null
+           then 'revoked_with_history_auto_split'
+         when active_branch_assignments = 0 and staff_status <> 'active'
+           then 'inactive_staff_no_active_assignment'
+         when active_branch_assignments = 0
+           then 'active_role_no_active_assignment'
+         else 'active_auto_split'
+       end as reconciliation_action
+  from assignment_stats
+ order by reconciliation_action, staff_id, role_code;
 ```
 
-If any active legacy row reports zero active branch assignments, create the intended branch assignment or revoke the legacy row before applying. Do not add a branch merely to satisfy the migration. Revoked legacy rows are mapped across their historical branch assignments; if none exist, reconcile or archive the row explicitly.
+`reconciliation_action` means:
+
+- `active_auto_split`: active role with at least one active branch assignment. No manual action; the migration splits it.
+- `revoked_with_history_auto_split`: revoked role with historical branch assignments. No manual action; the migration splits it for audit history.
+- `active_role_no_active_assignment`: active role with no active assignment. Create the intended `staff_branch_assignments` row or revoke the legacy role. Do not invent a branch merely to make the row fit.
+- `inactive_staff_no_active_assignment`: active role for a staff member who is not currently active, with no active assignment. Decide whether the staff member will be reactivated. If they will return, create the intended assignment; if not, revoke the legacy role.
+- `revoked_no_history`: revoked role with no historical assignment. The row is inert but cannot be represented under the new `branch_id NOT NULL` rule for branch scope. Back up the row, then remove it from the live table with explicit approval. Do not fabricate a branch. If retention policy requires keeping it, the migration remains blocked until a reviewed decision is made.
+
+#### Reconciliation procedure
+
+1. Take a backup of `public.staff_role_assignments` and `public.staff_branch_assignments` (see below).
+2. Run the pre-flight query and export its output for review.
+3. Reconcile every non-auto row:
+   - For `active_role_no_active_assignment` and `inactive_staff_no_active_assignment`, create the verified intended assignment or revoke the role.
+   - For `revoked_no_history`, export the row and, with explicit approval, delete the inert row.
+4. Re-run the pre-flight query until only `active_auto_split` and `revoked_with_history_auto_split` remain.
+5. Apply the migration inside a single transaction. The Supabase CLI/pgx path is transactional; if using `psql`, use `-1` (single transaction) and `ON_ERROR_STOP=1`.
+6. Validate after apply: no branch-scoped row has `branch_id IS NULL`; the new partial unique indexes exist; the one-active-Owner index still exists; and the authorization/RLS tests pass.
+
+#### Locking, maintenance, backup, and recovery
+
+- **Locking:** `ALTER TABLE ... ADD COLUMN` takes `ACCESS EXCLUSIVE` on `public.staff_role_assignments` for the whole migration transaction. Reads and writes to that table block until commit. The backfill is row-by-row and the new indexes are built non-concurrently. Plan a maintenance/low-traffic window and avoid concurrent staff-role or branch-assignment changes during the run.
+- **Backup:** before applying, keep a restorable copy, for example:
+  ```sql
+  create schema if not exists migration_backup;
+  create table migration_backup.staff_role_assignments_m21 as
+    select * from public.staff_role_assignments;
+  create table migration_backup.staff_branch_assignments_m21 as
+    select * from public.staff_branch_assignments;
+  ```
+  Use a timestamped backup name in production and restrict access to the backup schema. A `pg_dump` of the two tables is equally valid.
+- **Transactional failure:** if the migration aborts inside a transaction, the new column, constraints, indexes, backfill, and function changes roll back together. Fix the pre-flight issue and re-run; do not re-run blindly.
+- **Non-transactional runners:** if a runner splits statements, a failure can leave the new `branch_id` column, the dropped old index, or partially backfilled data. Stop, restore the backup, inspect the catalog, and retry only after cleanup. Never rely on manual production edits.
+- **Rollback after success:** there is no automatic down migration. The backfill is a one-way split of one legacy row into one row per branch. Reverting requires either restoring the backup or explicitly merging per-branch rows (keeping one row per staff/role and discarding the branch distinction). The merge loses per-branch history and can fail against the old `(staff_id, role_code, scope_type)` uniqueness rule unless rows are merged first. Test recovery on a disposable database before production.
 
 ### Owner invariant
 
