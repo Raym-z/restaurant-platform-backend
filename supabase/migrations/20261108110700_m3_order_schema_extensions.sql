@@ -36,8 +36,21 @@ alter table public.orders
     set default ('ORD-' || lpad(nextval('private.order_reference_seq')::text, 8, '0')),
   alter column order_reference set not null;
 
-alter table public.orders
-  add constraint orders_order_reference_unique unique (order_reference);
+-- Keep this file safe to retry after a partial operational failure. PostgreSQL
+-- has no `add constraint if not exists`, so check the catalog first.
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'orders_order_reference_unique'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_order_reference_unique unique (order_reference);
+  end if;
+end
+$$;
 
 alter table public.orders
   add column if not exists completed_at timestamptz;

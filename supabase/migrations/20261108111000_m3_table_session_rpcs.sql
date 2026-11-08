@@ -1,8 +1,12 @@
 -- M3 core POS operations: table availability and dining-session RPCs.
 --
--- Authorization uses the existing authz helpers only. The role checks below are
--- the single integration boundary that a future branch-scoped role model can
--- adapt without changing these RPC signatures.
+-- Authorization uses the existing authz helpers plus the M3-scoped
+-- private.assert_branch_history_access helper, which allows organization-scoped
+-- staff to read history for inactive branches without widening branch-scoped or
+-- cross-organization access. Writes remain gated by authz.assert_branch_role,
+-- which requires an active branch. The role checks below are the single
+-- integration boundary that a future branch-scoped role model can adapt without
+-- changing these RPC signatures.
 
 create or replace function public.list_branch_tables(
   p_branch_id uuid,
@@ -31,7 +35,7 @@ begin
     perform private.raise_app_error('BRANCH_NOT_FOUND', 'Branch was not found');
   end if;
 
-  perform authz.assert_branch_access(p_branch_id);
+  perform private.assert_branch_history_access(p_branch_id);
 
   select coalesce(
            jsonb_agg(
@@ -78,7 +82,7 @@ begin
     perform private.raise_app_error('TABLE_NOT_FOUND', 'Table was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   v_table := private.table_summary_json(p_table_id);
 
@@ -115,7 +119,7 @@ begin
     perform private.raise_app_error('TABLE_NOT_FOUND', 'Table was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   v_table := private.table_summary_json(p_table_id);
 
@@ -160,7 +164,7 @@ begin
     perform private.raise_app_error('TABLE_NOT_FOUND', 'Table was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   select ds.id
     into v_session_id
@@ -211,7 +215,7 @@ begin
     perform private.raise_app_error('BRANCH_NOT_FOUND', 'Branch was not found');
   end if;
 
-  perform authz.assert_branch_access(p_branch_id);
+  perform private.assert_branch_history_access(p_branch_id);
 
   if p_limit is null or p_limit < 1 or p_limit > 100 then
     perform private.raise_app_error('VALIDATION_ERROR', 'Page size must be between 1 and 100');
@@ -427,7 +431,7 @@ begin
     perform private.raise_app_error('DINING_SESSION_NOT_FOUND', 'Dining session was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   v_session := private.dining_session_detail_json(p_session_id);
 

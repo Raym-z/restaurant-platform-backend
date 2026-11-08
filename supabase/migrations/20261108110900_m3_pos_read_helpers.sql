@@ -4,6 +4,66 @@
 -- then call them. Every helper uses an empty search_path and schema-qualified
 -- references.
 
+-- Historical read access for inactive branches.
+--
+-- Active branches keep the existing branch-access rule unchanged. Once a
+-- branch is inactive, only active organization-scoped staff in the same
+-- organization retain read-only access to its history. Branch-scoped staff stay
+-- bound to the active-branch rule, so deactivation never widens a branch-scoped
+-- role. Cross-organization access is always denied.
+--
+-- This helper is additive and M3-scoped: it does not modify the shared
+-- authz.has_branch_access used by RLS or by other domains.
+create or replace function private.has_branch_history_access(p_branch_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.branches b
+    join public.staff_profiles sp
+      on sp.organization_id = b.organization_id
+    where b.id = p_branch_id
+      and sp.auth_user_id = auth.uid()
+      and sp.status = 'active'
+      and (
+        authz.has_branch_access(b.id)
+        or (
+          b.status = 'inactive'
+          and exists (
+            select 1
+            from public.staff_role_assignments sra
+            where sra.staff_id = sp.id
+              and sra.organization_id = b.organization_id
+              and sra.revoked_at is null
+              and sra.scope_type = 'organization'
+          )
+        )
+      )
+  );
+$$;
+
+revoke all on function private.has_branch_history_access(uuid) from public;
+
+create or replace function private.assert_branch_history_access(p_branch_id uuid)
+returns void
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not private.has_branch_history_access(p_branch_id) then
+    perform private.raise_app_error('BRANCH_ACCESS_DENIED', 'Branch access is not permitted');
+  end if;
+end;
+$$;
+
+revoke all on function private.assert_branch_history_access(uuid) from public;
+
 create or replace function private.order_summary_json(p_order_id uuid)
 returns jsonb
 language sql
@@ -20,7 +80,14 @@ as $$
     'source', o.source,
     'status', o.status,
     'currency', o.currency_code,
+    -- subtotalMinor is the immutable historical item snapshot. For cancelled
+    -- orders it is retained for audit but is not payable; consumers must use
+    -- payableSubtotalMinor for settlement/billing amounts.
     'subtotalMinor', o.subtotal_minor,
+    'payableSubtotalMinor', case
+      when o.status = 'cancelled' then 0
+      else o.subtotal_minor
+    end,
     'notes', o.notes,
     'itemCount', (
       select count(*)
@@ -468,7 +535,7 @@ begin
                'optionName', mo.name,
                'priceDeltaMinor', mo.price_delta_minor
              )
-             order by mg.sort_order, mo.sort_order, mo.id
+             order by mg.name, mg.id, mo.sort_order, mo.id
            ),
            '[]'::jsonb
          )

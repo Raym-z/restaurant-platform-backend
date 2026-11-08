@@ -24,6 +24,7 @@ const orderSummary = {
   status: "pending" as const,
   currency: "IDR",
   subtotalMinor: 50000,
+  payableSubtotalMinor: 50000,
   notes: null,
   itemCount: 1,
   activeItemCount: 1,
@@ -78,6 +79,21 @@ describe("M3 order contracts", () => {
     const parsed = OrderDetailSchema.parse(orderDetail);
     expect(parsed.items[0]?.lineTotalMinor).toBe(50000);
     expect(parsed.orderReference).toBe("ORD-00000001");
+  });
+
+  it("requires a payable subtotal that can differ from the historical snapshot", () => {
+    const cancelled = {
+      ...orderDetail,
+      status: "cancelled" as const,
+      payableSubtotalMinor: 0,
+    };
+    const parsed = OrderDetailSchema.parse(cancelled);
+    expect(parsed.subtotalMinor).toBe(50000);
+    expect(parsed.payableSubtotalMinor).toBe(0);
+
+    const withoutPayable: Record<string, unknown> = { ...orderDetail };
+    delete withoutPayable.payableSubtotalMinor;
+    expect(OrderDetailSchema.safeParse(withoutPayable).success).toBe(false);
   });
 
   it("rejects client-supplied price fields as unknown input", () => {

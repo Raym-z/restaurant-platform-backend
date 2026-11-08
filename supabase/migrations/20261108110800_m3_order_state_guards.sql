@@ -168,8 +168,22 @@ begin
     end if;
   end if;
 
-  -- Order-level served/completed must not get ahead of non-cancelled items.
+  -- Order-level served/completed must not get ahead of non-cancelled items,
+  -- and an order whose only items were removed cannot reach a terminal
+  -- fulfilled state. Such an order must be cancelled instead.
   if new.status in ('served', 'completed') then
+    if not exists (
+      select 1
+      from public.order_items oi
+      where oi.order_id = new.id
+        and oi.status <> 'cancelled'
+    ) then
+      perform private.raise_app_error(
+        'ORDER_INVALID_STATUS',
+        'An order must have at least one non-cancelled item before it can be served or completed'
+      );
+    end if;
+
     if exists (
       select 1
       from public.order_items oi
@@ -197,7 +211,7 @@ create trigger orders_guard_status_transition
   for each row execute function private.guard_order_status_transition();
 
 comment on function private.guard_order_status_transition() is
-  'Enforces pending -> accepted -> preparing -> ready -> served -> completed, with cancellation allowed before served. Payment state is independent.';
+  'Enforces pending -> accepted -> preparing -> ready -> served -> completed, with cancellation allowed before served. Served/completed require at least one non-cancelled item and all such items served.';
 
 create or replace function private.guard_dining_session_lifecycle()
 returns trigger

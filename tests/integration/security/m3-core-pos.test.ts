@@ -340,6 +340,82 @@ describe("M3 table availability and dining sessions", () => {
     ).toBe(1);
   });
 
+  it("reads the active session and filters branch sessions and orders by date", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const menuItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Filter item",
+      basePriceMinor: 10000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+
+    const active = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.get_active_dining_session($1) as result",
+      [table.tableId],
+    );
+    const activeSession = active.rows[0]!.result.activeSession as Record<
+      string,
+      unknown
+    >;
+    expect(activeSession.sessionId).toBe(sessionId);
+
+    await createOrder(manager, sessionId, [
+      { menuItemId: menuItem.itemId, quantity: 1 },
+    ]);
+
+    const from = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const to = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const sessions = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.list_branch_dining_sessions($1, null::public.dining_session_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, from, to],
+    );
+    expect(
+      (sessions.rows[0]!.result.sessions as unknown[]).length,
+    ).toBe(1);
+
+    const orders = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.list_branch_orders($1, null::public.order_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, from, to],
+    );
+    expect((orders.rows[0]!.result.orders as unknown[]).length).toBe(1);
+
+    const pastFrom = "2000-01-01T00:00:00Z";
+    const pastTo = "2000-01-02T00:00:00Z";
+    const oldSessions = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.list_branch_dining_sessions($1, null::public.dining_session_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, pastFrom, pastTo],
+    );
+    expect(
+      (oldSessions.rows[0]!.result.sessions as unknown[]).length,
+    ).toBe(0);
+
+    const oldOrders = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.list_branch_orders($1, null::public.order_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, pastFrom, pastTo],
+    );
+    expect((oldOrders.rows[0]!.result.orders as unknown[]).length).toBe(0);
+  });
+
   it("serializes concurrent opens to one active session", async () => {
     const admin = await createClient();
     const first = await createClient();
@@ -443,6 +519,90 @@ describe("M3 order creation and pricing", () => {
     expect((items[0]!.modifiers as unknown[]).length).toBe(1);
   });
 
+  it("creates orders without modifiers and adds modifier lines", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const plainItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Plain item",
+      basePriceMinor: 10000,
+    });
+    const modifiedItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Modified item",
+      basePriceMinor: 15000,
+    });
+    const modifier = await createModifier(admin, {
+      organizationId: fixture.organizationId,
+      menuItemId: modifiedItem.itemId,
+      name: "Extra",
+      priceDeltaMinor: 2000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+
+    // Regression for the former broken resolver: no modifiers still exercises
+    // the modifier aggregation query.
+    const plainOrder = await createOrder(manager, sessionId, [
+      { menuItemId: plainItem.itemId, quantity: 2 },
+    ]);
+    expect(plainOrder.subtotalMinor).toBe(20000);
+    expect(
+      (plainOrder.items as Array<Record<string, unknown>>)[0]!.modifiers,
+    ).toEqual([]);
+
+    const modifiedOrder = await createOrder(manager, sessionId, [
+      {
+        menuItemId: modifiedItem.itemId,
+        quantity: 1,
+        modifierOptionIds: [modifier.optionId],
+      },
+    ]);
+    expect(modifiedOrder.subtotalMinor).toBe(17000);
+    const modifiedLine = (
+      modifiedOrder.items as Array<Record<string, unknown>>
+    )[0]!;
+    expect(modifiedLine.baseUnitPriceMinor).toBe(15000);
+    expect(modifiedLine.modifierUnitDeltaMinor).toBe(2000);
+    expect((modifiedLine.modifiers as unknown[]).length).toBe(1);
+
+    const afterAdd = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.add_order_item($1, $2, $3, $4::uuid[], null) as result",
+      [plainOrder.orderId, modifiedItem.itemId, 1, [modifier.optionId]],
+    );
+    expect(afterAdd.rows[0]!.result.subtotalMinor).toBe(37000);
+    const addedLine = (
+      afterAdd.rows[0]!.result.items as Array<Record<string, unknown>>
+    ).find((item) => item.menuItemId === modifiedItem.itemId)!;
+    expect(addedLine.modifierUnitDeltaMinor).toBe(2000);
+    expect((addedLine.modifiers as unknown[]).length).toBe(1);
+
+    await cancelOrder(manager, String(plainOrder.orderId), "test cleanup");
+    await cancelOrder(manager, String(modifiedOrder.orderId), "test cleanup");
+    await manager.query("select public.close_dining_session($1, $2) as result", [
+      sessionId,
+      "test cleanup",
+    ]);
+  });
+
   it("rejects unavailable items, invalid quantities, and client price fields", async () => {
     const admin = await createClient();
     const manager = await createClient();
@@ -491,6 +651,15 @@ describe("M3 order creation and pricing", () => {
     await authenticateAs(manager, managerFixture.authUserId);
     const session = await openSession(manager, table.tableId);
     const sessionId = String(session.sessionId);
+
+    // Positive control: a valid no-modifier order must succeed. Without this,
+    // the negative assertions below could pass while order creation is broken.
+    const positive = await createOrder(manager, sessionId, [
+      { menuItemId: availableItem.itemId, quantity: 1 },
+    ]);
+    expect(positive.status).toBe("pending");
+    expect(positive.items as unknown[]).toHaveLength(1);
+    await cancelOrder(manager, String(positive.orderId), "positive control cleanup");
 
     await expectPgError(
       createOrder(manager, sessionId, [
@@ -740,6 +909,215 @@ describe("M3 order item modification and lifecycle", () => {
     );
   });
 
+  it("does not serve or complete an order whose last item was removed", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const menuItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Only item",
+      basePriceMinor: 10000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const order = await createOrder(manager, String(session.sessionId), [
+      { menuItemId: menuItem.itemId, quantity: 1 },
+    ]);
+    const orderId = String(order.orderId);
+    const orderItemId = String(
+      (order.items as Array<Record<string, unknown>>)[0]!.orderItemId,
+    );
+
+    const removed = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.remove_order_item($1, $2) as result",
+      [orderItemId, "remove the only item"],
+    );
+    expect(removed.rows[0]!.result.subtotalMinor).toBe(0);
+    expect(removed.rows[0]!.result.activeItemCount).toBe(0);
+
+    await transition(manager, orderId, "accepted");
+    await transition(manager, orderId, "preparing");
+    await transition(manager, orderId, "ready");
+
+    // The empty order cannot be fulfilled, even by a privileged direct update.
+    await expectPgError(
+      transition(manager, orderId, "served"),
+      "ORDER_INVALID_STATUS",
+    );
+    await expect(
+      admin.query("update public.orders set status = 'served' where id = $1", [
+        orderId,
+      ]),
+    ).rejects.toThrow(/ORDER_INVALID_STATUS/);
+
+    const cancelled = await cancelOrder(manager, orderId, "empty order");
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.subtotalMinor).toBe(0);
+    expect(cancelled.payableSubtotalMinor).toBe(0);
+  });
+
+  it("retains a cancelled order's subtotal as history and reports zero payable", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const firstItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Cancel item one",
+      basePriceMinor: 10000,
+    });
+    const secondItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Cancel item two",
+      basePriceMinor: 20000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+    const order = await createOrder(manager, sessionId, [
+      { menuItemId: firstItem.itemId, quantity: 1 },
+      { menuItemId: secondItem.itemId, quantity: 1 },
+    ]);
+    expect(order.subtotalMinor).toBe(30000);
+
+    const cancelled = await cancelOrder(
+      manager,
+      String(order.orderId),
+      "Customer left",
+    );
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.subtotalMinor).toBe(30000);
+    expect(cancelled.payableSubtotalMinor).toBe(0);
+    expect(cancelled.activeItemCount).toBe(0);
+
+    const sessionDetail = await manager.query<{
+      result: Record<string, unknown>;
+    }>("select public.get_dining_session($1) as result", [sessionId]);
+    expect(sessionDetail.rows[0]!.result.subtotalMinor).toBe(0);
+    expect(sessionDetail.rows[0]!.result.orderCount).toBe(1);
+    expect(sessionDetail.rows[0]!.result.activeOrderCount).toBe(0);
+    const summary = (
+      sessionDetail.rows[0]!.result.orders as Array<Record<string, unknown>>
+    )[0]!;
+    expect(summary.subtotalMinor).toBe(30000);
+    expect(summary.payableSubtotalMinor).toBe(0);
+  });
+
+  it("blocks new billable changes during subscription restriction but allows completion", async () => {
+    const admin = await createClient();
+    const manager = await createClient();
+    clients.push(admin, manager);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const otherTable = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      label: "T-restricted",
+    });
+    const menuItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "Restricted item",
+      basePriceMinor: 10000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+    const order = await createOrder(manager, sessionId, [
+      { menuItemId: menuItem.itemId, quantity: 2 },
+    ]);
+    const orderId = String(order.orderId);
+    const orderItemId = String(
+      (order.items as Array<Record<string, unknown>>)[0]!.orderItemId,
+    );
+
+    await admin.query(
+      "update public.subscriptions set state = 'restricted' where organization_id = $1",
+      [fixture.organizationId],
+    );
+
+    await expectPgError(
+      manager.query(
+        "select public.add_order_item($1, $2, $3, $4::uuid[], null) as result",
+        [orderId, menuItem.itemId, 1, []],
+      ),
+      "SUBSCRIPTION_RESTRICTED",
+    );
+    await expectPgError(
+      manager.query(
+        "select public.update_order_item_quantity($1, $2) as result",
+        [orderItemId, 3],
+      ),
+      "SUBSCRIPTION_RESTRICTED",
+    );
+    await expectPgError(
+      createOrder(manager, sessionId, [
+        { menuItemId: menuItem.itemId, quantity: 1 },
+      ]),
+      "SUBSCRIPTION_RESTRICTED",
+    );
+    await expectPgError(
+      openSession(manager, otherTable.tableId),
+      "SUBSCRIPTION_RESTRICTED",
+    );
+
+    // Reducing an existing line and finishing existing work remain available.
+    const reduced = await manager.query<{ result: Record<string, unknown> }>(
+      "select public.update_order_item_quantity($1, $2) as result",
+      [orderItemId, 1],
+    );
+    expect(reduced.rows[0]!.result.subtotalMinor).toBe(10000);
+
+    await transition(manager, orderId, "accepted");
+    await transition(manager, orderId, "preparing");
+    await transition(manager, orderId, "ready");
+    await transition(manager, orderId, "served");
+    const completed = await transition(manager, orderId, "completed");
+    expect(completed.status).toBe("completed");
+  });
+
   it("enforces transitions, cancellation actor, reason, and audit records", async () => {
     const admin = await createClient();
     const manager = await createClient();
@@ -937,7 +1315,7 @@ describe("M3 order item modification and lifecycle", () => {
 });
 
 describe("M3 authorization boundaries", () => {
-  it("denies inactive staff, cross-organization access, and direct writes", async () => {
+  it("retains historical reads for organization-scoped staff after branch deactivation", async () => {
     const admin = await createClient();
     const owner = await createClient();
     const manager = await createClient();
@@ -948,6 +1326,152 @@ describe("M3 authorization boundaries", () => {
     const otherFixture = await createOrgFixture(admin, { branchCount: 1 });
     const branchId = fixture.branchIds[0]!;
     const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const table = await createTable(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+    });
+    const menuItem = await createMenuItem(admin, {
+      organizationId: fixture.organizationId,
+      branchId,
+      name: "History item",
+      basePriceMinor: 10000,
+    });
+
+    await authenticateAs(manager, managerFixture.authUserId);
+    const session = await openSession(manager, table.tableId);
+    const sessionId = String(session.sessionId);
+    const order = await createOrder(manager, sessionId, [
+      { menuItemId: menuItem.itemId, quantity: 1 },
+    ]);
+    const orderId = String(order.orderId);
+    await cancelOrder(manager, orderId, "history fixture");
+    await manager.query("select public.close_dining_session($1, $2) as result", [
+      sessionId,
+      "history fixture",
+    ]);
+
+    await admin.query(
+      `update public.branches
+          set status = 'inactive', deactivated_at = now()
+        where id = $1`,
+      [branchId],
+    );
+
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+    const historicalOrder = await owner.query<{
+      result: Record<string, unknown>;
+    }>("select public.get_order($1) as result", [orderId]);
+    expect(historicalOrder.rows[0]!.result.status).toBe("cancelled");
+    expect(historicalOrder.rows[0]!.result.subtotalMinor).toBe(10000);
+    expect(historicalOrder.rows[0]!.result.payableSubtotalMinor).toBe(0);
+
+    const historicalSession = await owner.query<{
+      result: Record<string, unknown>;
+    }>("select public.get_dining_session($1) as result", [sessionId]);
+    expect(historicalSession.rows[0]!.result.status).toBe("closed");
+
+    const from = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const to = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const branchOrders = await owner.query<{
+      result: Record<string, unknown>;
+    }>(
+      "select public.list_branch_orders($1, null::public.order_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, from, to],
+    );
+    expect(
+      (branchOrders.rows[0]!.result.orders as unknown[]).length,
+    ).toBe(1);
+
+    const branchSessions = await owner.query<{
+      result: Record<string, unknown>;
+    }>(
+      "select public.list_branch_dining_sessions($1, null::public.dining_session_status, $2::timestamptz, $3::timestamptz, 10, 0) as result",
+      [branchId, from, to],
+    );
+    expect(
+      (branchSessions.rows[0]!.result.sessions as unknown[]).length,
+    ).toBe(1);
+
+    const tables = await owner.query<{ result: Record<string, unknown> }>(
+      "select public.list_branch_tables($1, true) as result",
+      [branchId],
+    );
+    expect((tables.rows[0]!.result.tables as unknown[]).length).toBe(1);
+
+    const active = await owner.query<{ result: Record<string, unknown> }>(
+      "select public.get_active_dining_session($1) as result",
+      [table.tableId],
+    );
+    expect(active.rows[0]!.result.activeSession).toBeNull();
+
+    // Branch-scoped staff remain bound to the active-branch rule.
+    await authenticateAs(manager, managerFixture.authUserId);
+    await expectPgError(
+      manager.query("select public.get_order($1) as result", [orderId]),
+      "BRANCH_ACCESS_DENIED",
+    );
+    await expectPgError(
+      manager.query("select public.get_dining_session($1) as result", [
+        sessionId,
+      ]),
+      "BRANCH_ACCESS_DENIED",
+    );
+    await expectPgError(
+      manager.query(
+        "select public.list_branch_orders($1, null::public.order_status, null::timestamptz, null::timestamptz, 10, 0) as result",
+        [branchId],
+      ),
+      "BRANCH_ACCESS_DENIED",
+    );
+
+    // Cross-organization history is always denied.
+    await authenticateAs(otherOwner, otherFixture.ownerAuthUserId);
+    await expectPgError(
+      otherOwner.query("select public.get_order($1) as result", [orderId]),
+      "ORDER_NOT_FOUND",
+    );
+    await expectPgError(
+      otherOwner.query("select public.get_dining_session($1) as result", [
+        sessionId,
+      ]),
+      "DINING_SESSION_NOT_FOUND",
+    );
+
+    // Historical reads do not reopen the branch for new operational work.
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+    await expectPgError(openSession(owner, table.tableId), "PERMISSION_DENIED");
+    await expectPgError(
+      createOrder(owner, sessionId, [
+        { menuItemId: menuItem.itemId, quantity: 1 },
+      ]),
+      "PERMISSION_DENIED",
+    );
+  });
+
+  it("denies inactive staff, cross-organization access, and direct writes", async () => {
+    const admin = await createClient();
+    const owner = await createClient();
+    const manager = await createClient();
+    const secondManager = await createClient();
+    const otherOwner = await createClient();
+    clients.push(admin, owner, manager, secondManager, otherOwner);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const otherFixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const managerFixture = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "manager",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+    const branchScopedManager = await addStaff(admin, {
       organizationId: fixture.organizationId,
       role: "manager",
       scope: "branch",
@@ -994,11 +1518,28 @@ describe("M3 authorization boundaries", () => {
     );
 
     await authenticateAs(owner, fixture.ownerAuthUserId);
+    const historicalTables = await owner.query<{
+      result: Record<string, unknown>;
+    }>("select public.list_branch_tables($1, false) as result", [branchId]);
+    expect(
+      (historicalTables.rows[0]!.result.tables as unknown[]).length,
+    ).toBe(1);
+
+    // Branch-scoped staff do not inherit inactive-branch history access.
+    await authenticateAs(secondManager, branchScopedManager.authUserId);
     await expectPgError(
-      owner.query("select public.list_branch_tables($1, false) as result", [
-        branchId,
-      ]),
+      secondManager.query(
+        "select public.list_branch_tables($1, false) as result",
+        [branchId],
+      ),
       "BRANCH_ACCESS_DENIED",
+    );
+
+    // Operational writes stay blocked on an inactive branch.
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+    await expectPgError(
+      openSession(owner, table.tableId),
+      "PERMISSION_DENIED",
     );
 
     const directInsert = owner.query(

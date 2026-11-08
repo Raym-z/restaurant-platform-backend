@@ -61,7 +61,14 @@ export const OrderSummarySchema = z
     source: OrderSourceSchema,
     status: OrderStatusSchema,
     currency: CurrencyCodeSchema,
+    /**
+     * Immutable historical snapshot of the order's active item lines. For a
+     * cancelled order this value is retained for audit but is not payable; use
+     * payableSubtotalMinor for billing/settlement amounts.
+     */
     subtotalMinor: NonNegativeMinorUnitsSchema,
+    /** Zero for cancelled orders; otherwise equal to subtotalMinor. */
+    payableSubtotalMinor: NonNegativeMinorUnitsSchema,
     notes: NullableTextSchema,
     itemCount: z.number().int().min(0),
     activeItemCount: z.number().int().min(0),

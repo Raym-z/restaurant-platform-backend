@@ -351,7 +351,7 @@ begin
     perform private.raise_app_error('ORDER_NOT_FOUND', 'Order was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   v_order := private.order_detail_json(p_order_id);
 
@@ -394,7 +394,7 @@ begin
     perform private.raise_app_error('DINING_SESSION_NOT_FOUND', 'Dining session was not found');
   end if;
 
-  perform authz.assert_branch_access(v_branch_id);
+  perform private.assert_branch_history_access(v_branch_id);
 
   if p_limit is null or p_limit < 1 or p_limit > 100 then
     perform private.raise_app_error('VALIDATION_ERROR', 'Page size must be between 1 and 100');
@@ -473,7 +473,7 @@ begin
     perform private.raise_app_error('BRANCH_NOT_FOUND', 'Branch was not found');
   end if;
 
-  perform authz.assert_branch_access(p_branch_id);
+  perform private.assert_branch_history_access(p_branch_id);
 
   if p_limit is null or p_limit < 1 or p_limit > 100 then
     perform private.raise_app_error('VALIDATION_ERROR', 'Page size must be between 1 and 100');
@@ -562,6 +562,11 @@ begin
     v_order.branch_id,
     array['owner', 'admin', 'manager', 'cashier']::text[]
   );
+
+  -- Adding a new billable line is new operational work. Existing orders remain
+  -- editable for reductions/removals and can still be completed or cancelled
+  -- while the organization is restricted or suspended.
+  perform authz.assert_org_operational(v_org_id);
 
   if p_quantity is null or p_quantity < 1 or p_quantity > 99 then
     perform private.raise_app_error(
@@ -764,6 +769,12 @@ begin
   end if;
 
   v_old_quantity := v_item.quantity;
+
+  -- Increasing billable quantity is new operational work. Reducing quantity is
+  -- a correction and remains available during a restriction or suspension.
+  if p_quantity > v_old_quantity then
+    perform authz.assert_org_operational(v_org_id);
+  end if;
 
   update public.order_items
      set quantity = p_quantity

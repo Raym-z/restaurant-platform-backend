@@ -633,7 +633,7 @@ session closure.
 | Reject order                   | RPC                     | Validate permission and transition, record reason |
 | Update item preparation status | RPC                     | Enforce valid item-level transitions              |
 | Mark item served               | RPC                     | Validate preparation state and permissions        |
-| Mark order served              | RPC                     | Validate all non-cancelled items are served       |
+| Mark order served              | RPC                     | Validate at least one non-cancelled item and all such items are served |
 | Cancel order                   | RPC                     | Validate cancellation rules and record reason     |
 | Cancel individual item         | RPC                     | Validate preparation state and permissions        |
 | Correct order                  | RPC                     | Apply explicit audited correction workflow        |
@@ -650,7 +650,8 @@ The backend enforces all transitions.
 
 Item preparation statuses are tracked independently.
 
-An order is considered served when all non-cancelled items are served.
+An order is considered served when it has at least one non-cancelled item and all
+non-cancelled items are served.
 
 Payment status is independent of order preparation status.
 
@@ -661,9 +662,14 @@ Corrections and cancellations require appropriate permissions and audit records.
 M3 adds an explicit operational `completed` state after `served` and implements
 the approved transition matrix, staff order creation, item modification before
 preparation, idempotent creation, and audited cancellation. Order transitions
-cascade to non-cancelled items, and `served`/`completed` requires all such items
-to be served. Independent item-level KDS transitions remain deferred. Payment
-settlement remains independent. See
+cascade to non-cancelled items; `served`/`completed` requires at least one
+non-cancelled item and all such items to be served. An order whose last item was
+removed can only be cancelled. Independent item-level KDS transitions remain
+deferred. Payment settlement remains independent.
+
+Order responses expose `subtotalMinor` (historical item snapshot, retained for
+audit after cancellation) and `payableSubtotalMinor` (zero for cancelled orders).
+Session summaries exclude cancelled orders from their payable total. See
 [`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md).
 
 ### 8.6 POS — Billing and Payments
