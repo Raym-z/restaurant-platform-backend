@@ -7,7 +7,23 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:static",
+    "doctor": "node scripts/doctor.mjs",
+    "guard": "node scripts/guard-local.mjs",
+    "env:local": "node scripts/env.mjs",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test:static": "node scripts/run-static.mjs",
+    "test:db": "node scripts/test-db.mjs",
+    "test:db:start": "node scripts/start-test-stack.mjs",
+    "test:db:fast": "node scripts/test-db.mjs --no-reset",
+    "test:integration": "node scripts/test-integration.mjs",
+    "test:edge": "node scripts/test-edge.mjs",
+    "test:all": "node scripts/test-all.mjs",
+    "verify:migrations": "node scripts/verify-migrations.mjs",
+    "verify:secrets": "node scripts/verify-secrets.mjs",
+    "verify:blockers": "node scripts/verify-blockers.mjs",
+    "verify:rls": "node scripts/verify-rls-coverage.mjs",
+    "verify:contracts": "node scripts/verify-contract-drift.mjs"
   },
   "repository": {
     "type": "git",
@@ -21,13 +37,19 @@
     "url": "https://github.com/Raym-z/restaurant-platform-backend/issues"
   },
   "homepage": "https://github.com/Raym-z/restaurant-platform-backend#readme",
+  "engines": {
+    "node": ">=24"
+  },
+  "private": true,
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "eslint": "^10.14.0",
+    "pg": "^8.23.1",
     "prettier": "^3.9.10",
     "supabase": "^3.0.0",
     "tsx": "^4.23.15",

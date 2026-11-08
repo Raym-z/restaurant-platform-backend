@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "Maps every RLS-enabled public table and operation to test IDs. Populate as Agent 2 lands policies. The database CI job enforces this once entries exist.",
+  "tables": {}
+}
