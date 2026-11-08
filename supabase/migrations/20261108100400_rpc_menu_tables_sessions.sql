@@ -115,6 +115,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_org_id);
 
   update public.menu_categories
      set archived_at = now()
@@ -352,6 +353,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_org_id);
 
   update public.menu_items
      set archived_at = now()
@@ -607,6 +609,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_org_id);
 
   begin
     insert into public.menu_item_modifier_groups (

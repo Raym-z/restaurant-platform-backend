@@ -539,6 +539,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   if p_role_code = 'owner' then
     perform private.raise_app_error(
@@ -642,6 +643,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   if v_assignment.role_code = 'admin'
      and not authz.has_org_role(array['owner']::text[])
@@ -718,6 +720,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   begin
     insert into public.staff_branch_assignments (
@@ -792,6 +795,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   if v_assignment.revoked_at is not null then
     return jsonb_build_object('assignmentId', p_assignment_id, 'status', 'already_revoked');
@@ -852,6 +856,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   update public.staff_profiles
      set status = 'deactivated',
@@ -902,6 +907,7 @@ begin
   end if;
 
   perform authz.assert_org_role(array['owner', 'admin']::text[]);
+  perform authz.assert_org_can_administer(v_actor_org_id);
 
   update public.staff_profiles
      set status = 'active',
@@ -957,6 +963,7 @@ begin
 
   if p_staff_id <> v_actor_staff_id then
     perform authz.assert_org_role(array['owner', 'admin']::text[]);
+    perform authz.assert_org_can_administer(v_actor_org_id);
   end if;
 
   if nullif(btrim(p_display_name), '') is null then
