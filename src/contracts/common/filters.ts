@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { UtcInstantSchema } from "./time.js";
+import { UtcInstantSchema } from "./time.ts";
 
 export const SortDirectionSchema = z.enum(["asc", "desc"]);
 

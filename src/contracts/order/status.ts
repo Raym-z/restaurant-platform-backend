@@ -25,6 +25,7 @@ export const OrderStatusSchema = z.enum(ORDER_STATUSES);
  */
 export const ORDER_ITEM_STATUSES = [
   "pending",
+  "accepted",
   "preparing",
   "ready",
   "served",

@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-import { IdempotencyKeySchema, UuidSchema } from "../common/ids.js";
-import { UtcInstantSchema } from "../common/time.js";
-import { OrderStatusSchema } from "../order/status.js";
-import { GuestTokenSchema } from "./session.js";
+import { IdempotencyKeySchema, UuidSchema } from "../common/ids.ts";
+import { UtcInstantSchema } from "../common/time.ts";
+import { OrderStatusSchema } from "../order/status.ts";
+import { GuestTokenSchema } from "./session.ts";
 
 /**
  * Guest order request line. Prices and totals are intentionally absent: the

@@ -1,7 +1,7 @@
 import type {
   ApiErrorCode,
   ApiErrorPayload,
-} from "../contracts/common/errors.js";
+} from "../contracts/common/errors.ts";
 
 /**
  * HTTP status mapping for the canonical API error catalog. Edge Functions and
@@ -30,6 +30,7 @@ export const HTTP_STATUS_BY_ERROR_CODE: Record<ApiErrorCode, number> = {
   SUBSCRIPTION_EXPIRED: 422,
   SUBSCRIPTION_PERMISSION_DENIED: 403,
   SUBSCRIPTION_LIMIT_REACHED: 422,
+  SUBSCRIPTION_PLAN_UNAVAILABLE: 422,
 
   MENU_ITEM_NOT_FOUND: 404,
   MENU_ITEM_UNAVAILABLE: 422,

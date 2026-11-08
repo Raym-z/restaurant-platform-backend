@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { UuidSchema } from "./ids.js";
+import { UuidSchema } from "./ids.ts";
 
 /**
  * Exactly five organization roles are supported in the initial release.
