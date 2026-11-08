@@ -9,7 +9,10 @@ schemas shared by the backend, POS, ordering, and waitlist applications.
   TypeScript types.
 - Runtime validation is mandatory at trusted boundaries. TypeScript types do not
   validate incoming requests.
-- IDs are UUID strings. Timestamps are ISO-8601 UTC strings ending in `Z`.
+- IDs are UUID strings. Timestamps are ISO-8601 instants: inputs may use `Z`
+  or a numeric offset, and the shared schema normalizes them to UTC `Z` (for
+  example `2026-11-08T10:00:00.000000Z`). Malformed or impossible timestamps
+  are rejected.
 - Money is represented as integer minor units plus an ISO 4217 currency code.
   Floating-point monetary values are rejected.
 - API responses use the success/error envelopes in `common/api-response.ts`.

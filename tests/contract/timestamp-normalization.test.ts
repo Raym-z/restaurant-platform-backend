@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import { SubmitGuestOrderResponseSchema } from "../../src/contracts/guest/order.ts";
 import {
   GuestOrderSummarySchema,
   GuestSessionContextSchema,
+  GuestSessionDataResponseSchema,
+  GuestSessionResponseSchema,
+  ResolveTableResponseSchema,
 } from "../../src/contracts/guest/session.ts";
 import {
   UtcInstantSchema,
   normalizeUtcInstant,
 } from "../../src/contracts/common/time.ts";
+import { AppError } from "../../src/lib/errors.ts";
 import { toGuestSessionContext } from "../../supabase/functions/_shared/guest.ts";
 
 const session = {
@@ -22,6 +27,24 @@ const session = {
   status: "active",
   openedAt: "2026-11-08T17:00:00+07:00",
 } as const;
+
+const withOpenedAt = (openedAt: string) => ({ ...session, openedAt });
+
+const order = (createdAt: string) => ({
+  orderId: "00000000-0000-4000-8000-000000000005",
+  status: "pending" as const,
+  subtotalMinor: 25000,
+  createdAt,
+  items: [
+    {
+      orderItemId: "00000000-0000-4000-8000-000000000006",
+      name: "Nasi Goreng",
+      quantity: 1,
+      status: "pending" as const,
+      lineTotalMinor: 25000,
+    },
+  ],
+});
 
 describe("timestamp normalization", () => {
   it("normalizes offsets and Z to UTC Z with microseconds", () => {
@@ -98,5 +121,88 @@ describe("timestamp normalization", () => {
     expect(UtcInstantSchema.parse("2026-11-08T00:00:00+14:00")).toBe(
       "2026-11-07T10:00:00.000000Z",
     );
+  });
+
+  it("normalizes the guest resolve response, including token expiry", () => {
+    const parsed = ResolveTableResponseSchema.parse({
+      session: withOpenedAt("2026-11-08T17:00:00+07:00"),
+      guestToken: "a".repeat(43),
+      tokenExpiresAt: "2026-11-08T10:30:00+00:00",
+    });
+
+    expect(parsed.session.openedAt).toBe("2026-11-08T10:00:00.000000Z");
+    expect(parsed.tokenExpiresAt).toBe("2026-11-08T10:30:00.000000Z");
+  });
+
+  it("normalizes the guest reconnect response", () => {
+    const zulu = GuestSessionResponseSchema.parse({
+      session: withOpenedAt("2026-11-08T10:00:00Z"),
+    });
+    expect(zulu.session.openedAt).toBe("2026-11-08T10:00:00.000000Z");
+
+    const offset = GuestSessionResponseSchema.parse({
+      session: withOpenedAt("2026-11-08T17:00:00+07:00"),
+    });
+    expect(offset.session.openedAt).toBe("2026-11-08T10:00:00.000000Z");
+  });
+
+  it("normalizes the guest session-data response and order timestamps", () => {
+    const parsed = GuestSessionDataResponseSchema.parse({
+      session: withOpenedAt("2026-11-08T17:00:00+07:00"),
+      orders: [order("2026-11-08T17:05:00+07:00")],
+    });
+
+    expect(parsed.session.openedAt).toBe("2026-11-08T10:00:00.000000Z");
+    expect(parsed.orders[0]!.createdAt).toBe("2026-11-08T10:05:00.000000Z");
+  });
+
+  it("normalizes the guest order submission response", () => {
+    const parsed = SubmitGuestOrderResponseSchema.parse({
+      orderId: "00000000-0000-4000-8000-000000000005",
+      status: "pending",
+      createdAt: "2026-11-08T17:00:00+07:00",
+    });
+
+    expect(parsed.createdAt).toBe("2026-11-08T10:00:00.000000Z");
+  });
+
+  it("rejects malformed timestamps in guest RPC responses", () => {
+    expect(
+      ResolveTableResponseSchema.safeParse({
+        session: withOpenedAt("2026-11-08T10:00:00"),
+        guestToken: "a".repeat(43),
+        tokenExpiresAt: "2026-11-08T10:30:00+00:00",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      GuestSessionResponseSchema.safeParse({
+        session: withOpenedAt("2026-11-08T10:00:00+07:60"),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      GuestSessionDataResponseSchema.safeParse({
+        session: withOpenedAt("2026-11-08T10:00:00Z"),
+        orders: [order("2026-02-30T10:00:00Z")],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      SubmitGuestOrderResponseSchema.safeParse({
+        orderId: "00000000-0000-4000-8000-000000000005",
+        status: "pending",
+        createdAt: "2026-11-08 10:00:00+00",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an invalid Edge session context instead of accepting it", () => {
+    expect(() =>
+      toGuestSessionContext({
+        ...session,
+        openedAt: "2026-11-08 10:00:00+00",
+      }),
+    ).toThrow(AppError);
   });
 });

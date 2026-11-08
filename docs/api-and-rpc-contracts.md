@@ -1389,6 +1389,10 @@ The backend must validate filter values and enforce authorization independently.
 
 Use UTC timestamps for stored instants.
 
+Wire timestamps are ISO-8601 instants. Accept `Z` or a numeric UTC offset
+(`+00:00`, `+07:00`, and so on) and normalize to UTC `Z` at the trust boundary.
+Reject malformed, impossible, or offset-less values rather than coercing them.
+
 Branch-local date filtering must use the branch's configured IANA timezone.
 
 For example:
