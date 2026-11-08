@@ -1,0 +1,82 @@
+name: ci-database
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'agent/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-database-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  database:
+    name: Database, RLS, and concurrency
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for schema foundation
+        id: preflight
+        run: |
+          if [ -f supabase/config.toml ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Database tests deferred::supabase/config.toml is owned by Agent 1 and is not present yet. Static checks remain active."
+          fi
+
+      - name: Run database tests
+        if: steps.preflight.outputs.ready == 'true'
+        run: npm run test:db
+
+      - name: Run integration and concurrency tests
+        if: steps.preflight.outputs.ready == 'true'
+        run: npm run test:integration
+
+      - name: Check generated-type drift
+        if: steps.preflight.outputs.ready == 'true'
+        run: npm run verify:contracts
+
+      - name: Validate seed still applies
+        if: steps.preflight.outputs.ready == 'true'
+        run: |
+          if [ -f supabase/seed.sql ]; then
+            npx --no-install supabase db reset
+          else
+            echo "No supabase/seed.sql yet; seed validation deferred to Agent 1."
+          fi
+
+      - name: Capture diagnostics
+        if: failure()
+        run: |
+          mkdir -p test-results
+          npx --no-install supabase status > test-results/supabase-status.txt 2>&1 || true
+          docker ps -a > test-results/docker-ps.txt 2>&1 || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
