@@ -37,6 +37,10 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`                | Branch-revocation serialization, role-revocation lock order, backfill SHARE lock, permission branch validation, normalized errors     |
 | `20261109140000_m2_staff_admin_error_normalization.sql`                 | Missing/cross-tenant normalization for staff deactivation, reactivation, and profile updates                                          |
 | `20261109140100_m3_order_insert_terminal_state_guard.sql`               | M3: defense-in-depth `BEFORE INSERT` terminal-state guard for privileged order inserts                                                 |
+| `20261109150000_m4_kitchen_infrastructure.sql`                          | M4.1: branch-scoped kitchen stations, category/item menu routing, kitchen tickets and ticket items, RLS and read grants                 |
+| `20261109160000_m4_kitchen_ticket_lifecycle.sql`                        | M4.2: ticket generation, independent item lifecycle, aggregation, cancellation propagation, audit, and KDS transition RPCs             |
+| `20261109170000_m4_kitchen_ticket_lifecycle_corrections.sql`            | M4.2 corrections: generation identity, exact aggregate guards, staff/system cancellation actors, completed-item protection, routing diagnostics |
+| `20261109180000_m4_kitchen_ticket_lifecycle_final_corrections.sql`      | M4.2 final corrections: preparing/ready item removal, direct item aggregate trigger, cancelled-ticket insertion guard, attribution immutability |
 
 Agent 1 migrations are never edited.
 

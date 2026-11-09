@@ -13,6 +13,7 @@ export * from "./contracts/common/validation.ts";
 export * from "./contracts/branch/rpc.ts";
 export * from "./contracts/guest/order.ts";
 export * from "./contracts/guest/session.ts";
+export * from "./contracts/kitchen/rpc.ts";
 export * from "./contracts/menu/rpc.ts";
 export * from "./contracts/organization/rpc.ts";
 export * from "./contracts/order/rpc.ts";

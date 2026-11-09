@@ -680,7 +680,8 @@ session closure.
 | Mark item served               | RPC                     | Validate preparation state and permissions        |
 | Mark order served              | RPC                     | Validate at least one non-cancelled item and all such items are served |
 | Cancel order                   | RPC                     | Validate cancellation rules and record reason     |
-| Cancel individual item         | RPC                     | Validate preparation state and permissions        |
+| Cancel individual item         | RPC                     | Validate preparation state and permissions; reject completed kitchen work |
+| View kitchen routing issues    | RPC                     | Report inactive item/category routes in an authorized branch |
 | Correct order                  | RPC                     | Apply explicit audited correction workflow        |
 | Subscribe to order updates     | Realtime                | Deliver authorized order changes                  |
 | Subscribe to KDS updates       | Realtime                | Deliver authorized preparation changes            |
@@ -709,8 +710,92 @@ the approved transition matrix, staff order creation, item modification before
 preparation, idempotent creation, and audited cancellation. Order transitions
 cascade to non-cancelled items; `served`/`completed` requires at least one
 non-cancelled item and all such items to be served. An order whose last item was
-removed can only be cancelled. Independent item-level KDS transitions remain
-deferred. Payment settlement remains independent.
+removed can only be cancelled. Payment settlement remains independent.
+
+M4.2 implements the KDS order integration. Accepting an order atomically
+generates one ticket per `(order, active station)`; item-level routing overrides
+category routing, and unrouted items do not block acceptance. Ticket identity is
+generation-based: one active ticket per `(order, station)`, with cancelled
+tickets retained as historical generations. Independent kitchen ticket-item
+state is moved with:
+
+- `public.start_kitchen_ticket_item(ticket_item_id uuid)` — `pending` to
+  `preparing`.
+- `public.mark_kitchen_ticket_item_ready(ticket_item_id uuid)` — `preparing` to
+  `ready`.
+- `public.complete_kitchen_ticket_item(ticket_item_id uuid)` — `ready` to
+  `completed`.
+
+The item-transition RPCs require an Owner/Admin/Manager/Kitchen Staff branch
+role; Cashier is denied. Each returns the updated ticket JSON, including items,
+generation, aggregate ticket status, and cancellation actor fields. Ticket status
+is derived exactly from item state (`pending`, `preparing`, `ready`, `completed`,
+or `cancelled`) and cancellation never produces `completed`. Details and exact
+aggregation rules are in
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
+
+`public.remove_order_item` is the supported item-removal path. It accepts orders
+in `pending`, `accepted`, `preparing`, or `ready`, provided every matching
+kitchen ticket item is `pending`, `preparing`, or `ready`. An unrouted item has
+no matching ticket item and follows the same rule. The order status is not
+changed by removal. Terminal orders (`served`, `completed`, `cancelled`) are
+rejected, and any matching `completed` kitchen item rejects the removal with
+`ORDER_MODIFICATION_NOT_ALLOWED`. Multi-station order items are removed
+atomically or rejected as a whole. The order subtotal is recalculated within the
+same transaction through a narrowly scoped M3 guard exception.
+
+Ticket-item aggregate maintenance is a database invariant. An
+`AFTER INSERT OR UPDATE OF status` trigger recalculates the parent ticket for
+trusted direct item writes and rejects active items under cancelled tickets.
+Authenticated clients still have `SELECT` only; direct kitchen-table writes are
+not a supported application path. Once a ticket or ticket item is cancelled, its
+cancellation actor, timestamp, and reason are immutable.
+
+#### `public.list_kitchen_routing_issues`
+
+Read-only branch routing diagnostics for Owner/Admin/Manager.
+
+- Argument: `p_branch_id uuid`.
+- Authorization: authenticated staff with Owner, Admin, or Manager access to the
+  branch. Cashier and Kitchen Staff are denied.
+- Errors: `BRANCH_NOT_FOUND` when the branch does not belong to the caller's
+  organization; `PERMISSION_DENIED` when the caller lacks the required branch
+  role.
+- Returns: `jsonb`
+
+```json
+{
+  "branchId": "uuid",
+  "issues": [
+    {
+      "issueType": "inactive_item_route",
+      "branchId": "uuid",
+      "menuItemId": "uuid",
+      "menuItemName": "Nasi Goreng",
+      "menuCategoryId": "uuid",
+      "menuCategoryName": "Mains",
+      "stationId": "uuid",
+      "stationName": "Hot line",
+      "stationStatus": "inactive",
+      "categoryRouteActive": true
+    },
+    {
+      "issueType": "inactive_category_route",
+      "branchId": "uuid",
+      "menuCategoryId": "uuid",
+      "menuCategoryName": "Mains",
+      "stationId": "uuid",
+      "stationName": "Cold line",
+      "stationStatus": "inactive"
+    }
+  ]
+}
+```
+
+`inactive_item_route` means the item-level route suppresses category routing; if
+`categoryRouteActive` is true, the otherwise-active category route will not be
+used while the item-level station remains inactive. The RPC returns only the
+requested branch's routing configuration.
 
 Order responses expose `subtotalMinor` (historical item snapshot, retained for
 audit after cancellation) and `payableSubtotalMinor` (zero for cancelled orders).

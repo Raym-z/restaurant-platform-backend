@@ -346,11 +346,38 @@ The following rules were reviewed and approved for the initial release. They ref
 - An order must not be considered served merely because its items are Ready.
 - The backend coordinates and validates item-level and order-level status transitions. The exact transition matrix and exceptional paths remain to be specified.
 
-M4.1 adds the KDS storage foundation without generating tickets or changing
-order lifecycle behavior: branch-scoped kitchen stations, category/item menu
-routing, and one kitchen ticket per `(order, station)` with ticket items linked
-to immutable order-item snapshots. See
-[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md).
+M4.1 adds the KDS storage foundation: branch-scoped kitchen stations,
+category/item menu routing, and one active kitchen ticket per `(order, station)`
+with ticket items linked to immutable order-item snapshots. M4.2 generates
+tickets on order acceptance, keeps independent `kitchen_ticket_items.status` so
+the M3 order-item cascade cannot overwrite kitchen progress, aggregates ticket
+status from item state, and propagates cancellation. Tickets carry a `generation`
+number so cancelled station tickets remain historical while later work receives
+a new active ticket. Cancellation rows record `cancelled_by_actor_type`
+(`staff` or `system`) plus `cancelled_by_staff_id` for staff cancellations;
+system cancellations have a null staff id and are never attributed to the order
+submitter. `order_items.status` remains the M3 order-lifecycle state.
+
+M4.2 final corrections add these KDS invariants:
+
+- `public.remove_order_item` may remove items from `pending`, `accepted`,
+  `preparing`, or `ready` orders while every matching kitchen item is
+  `pending`/`preparing`/`ready`; an unrouted item has no matching kitchen item
+  and follows the same rule. The order status is not regressed, the subtotal is
+  recalculated atomically, and terminal orders remain blocked.
+- Any matching `completed` kitchen item blocks removal. Multi-station removals
+  succeed or fail atomically.
+- An `AFTER INSERT OR UPDATE OF status` trigger on `kitchen_ticket_items`
+  recalculates the parent ticket for direct item writes and rejects active items
+  under cancelled tickets. Direct kitchen writes remain a trusted/privileged
+  boundary, not a client API.
+- Cancellation attribution fields on cancelled tickets and ticket items are
+  immutable. Staff/system constraints remain in force for first-time
+  cancellation.
+
+See
+[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md) and
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
 
 ### 11.7 Bill Finalization and Subsequent Orders
 

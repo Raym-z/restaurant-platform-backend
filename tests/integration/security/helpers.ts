@@ -306,6 +306,24 @@ export type CapturedPgError = {
   code: string | undefined;
 };
 
+export type KitchenRoutingIssue = Record<string, unknown>;
+
+export type KitchenRoutingIssuesResponse = {
+  branchId: string;
+  issues: KitchenRoutingIssue[];
+};
+
+export const listRoutingIssues = async (
+  client: pg.Client,
+  branchId: string,
+): Promise<KitchenRoutingIssuesResponse> => {
+  const result = await client.query<{ result: KitchenRoutingIssuesResponse }>(
+    "select public.list_kitchen_routing_issues($1) as result",
+    [branchId],
+  );
+  return result.rows[0]!.result;
+};
+
 export const capturePgError = async (
   promise: Promise<unknown>,
 ): Promise<CapturedPgError> => {

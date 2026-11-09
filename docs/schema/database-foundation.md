@@ -320,7 +320,9 @@ line_total           = effective_unit_price * item_quantity
 - Negative modifier deltas are permitted by the schema but must keep the effective unit price nonnegative. The final sign policy remains unresolved.
 - No independent modifier quantity is implemented initially.
 - M3 order RPCs validate the modifier selection and recalculate order subtotal from non-cancelled item lines while the order is mutable. No deferred trigger validates the aggregate sums; privileged direct writes remain a database-owner concern.
-- Order subtotal is recalculated while pending/accepted and immutable once preparation starts.
+- Order subtotal is recalculated while pending/accepted and, for the guarded
+  item-removal path, while preparing/ready. General total edits remain blocked
+  once preparation starts.
 
 ## 11. Order numbering
 
@@ -404,15 +406,46 @@ M4.1 adds `kitchen_stations`, `kitchen_station_menu_categories`,
 - Stations are branch-scoped and names are unique per branch using a
   case-insensitive trimmed comparison.
 - Category and item menu routes are separate branch-scoped tables. Item-level
-  routing is intended to take precedence over category routing in the M4.2
-  ticket resolver.
-- `kitchen_tickets` has one row per `(order, station)` and is the idempotency
-  anchor for M4.2 generation.
+  routing takes precedence over category routing in the M4.2 ticket resolver.
+- `kitchen_tickets` has one **active** row per `(order, station)`, enforced by a
+  partial unique index over non-cancelled tickets, and an idempotency key of
+  `(order_id, station_id, generation)`. Cancelled tickets remain as historical
+  generations.
 - Ticket items use composite foreign keys to guarantee the order item belongs to
   the ticket's order, branch, and organization.
 - RLS allows Owner/Admin/Manager/Kitchen Staff to read kitchen data in a branch;
   Cashier and anonymous clients receive no access. Client writes remain
   RPC-only.
 
-See [`../m4-kitchen-infrastructure.md`](../m4-kitchen-infrastructure.md) for the
-routing and lifecycle decisions.
+M4.2 adds independent `kitchen_ticket_items.status`, `started_at`, `ready_at`,
+`completed_at`, `cancelled_at`, `cancelled_by_actor_type`,
+`cancelled_by_staff_id`, and `cancellation_reason` columns. `kitchen_tickets`
+adds `generation` and `cancelled_by_actor_type`. Cancellation constraints require
+a reason and either a staff actor or a system actor with a null staff id. It also
+adds:
+
+- `AFTER` triggers that generate idempotent tickets when an order becomes
+  `accepted`, route items added to accepted orders, and propagate order/item
+  cancellation. New work after a cancelled station ticket receives the next
+  generation; cancelled tickets are never reopened.
+- Private routing, generation, aggregation, guard, and audit functions. The
+  ticket guard rejects a persisted status that does not exactly match the
+  active-item aggregate and rejects direct cancellation while active items
+  remain.
+- `public.start_kitchen_ticket_item`, `public.mark_kitchen_ticket_item_ready`,
+  and `public.complete_kitchen_ticket_item` RPCs for Owner/Admin/Manager/Kitchen
+  Staff.
+- Read-only `public.list_kitchen_routing_issues` for Owner/Admin/Manager to
+  identify inactive item/category routes, including an inactive item-level route
+  that suppresses an otherwise-active category route.
+- Final correction `20261109180000_m4_kitchen_ticket_lifecycle_final_corrections.sql`:
+  it narrows `public.remove_order_item` to allow kitchen-state-authorized removal
+  from `preparing`/`ready` orders while blocking completed kitchen work and
+  terminal orders; adds an `AFTER INSERT OR UPDATE OF status` aggregate trigger on
+  `kitchen_ticket_items` that rejects active items under cancelled tickets; and
+  makes cancellation actor/timestamp/reason fields immutable once cancelled.
+
+`order_items.status` remains the M3 order-lifecycle state; kitchen preparation
+is tracked separately and is not overwritten by the M3 cascade. See
+[`../m4-kitchen-infrastructure.md`](../m4-kitchen-infrastructure.md) and
+[`../m4-kitchen-ticket-lifecycle.md`](../m4-kitchen-ticket-lifecycle.md).

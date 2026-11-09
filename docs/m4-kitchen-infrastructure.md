@@ -4,6 +4,10 @@ M4.1 adds the database and authorization foundation for the Kitchen Display
 System (KDS). It intentionally does **not** generate tickets, implement ticket
 lifecycle RPCs, add realtime subscriptions, or change order lifecycle behavior.
 
+M4.2 builds on this foundation with ticket generation, independent item
+preparation state, ticket aggregation, cancellation propagation, and lifecycle
+RPCs. See [`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
+
 ## 1. Schema
 
 | Table | Purpose |
@@ -11,7 +15,7 @@ lifecycle RPCs, add realtime subscriptions, or change order lifecycle behavior.
 | `public.kitchen_stations` | Branch-scoped kitchen stations with active/inactive state. |
 | `public.kitchen_station_menu_categories` | Category-level menu routing to a station in a branch. |
 | `public.kitchen_station_menu_items` | Item-level menu routing to a station in a branch. |
-| `public.kitchen_tickets` | One ticket per `(order, station)`, linked to the order and branch. |
+| `public.kitchen_tickets` | One active ticket per `(order, station)`, with cancelled generations retained as history. |
 | `public.kitchen_ticket_items` | Immutable links from a ticket to `order_items`. |
 
 All five tables have RLS enabled. Authenticated clients receive `SELECT` only
@@ -44,40 +48,49 @@ defaults are intentionally not encoded as row presence.
 
 ### Routing precedence (M4.2 resolver)
 
-M4.1 stores both route types but does not resolve them. The intended M4.2 rule
-is:
+M4.1 stores both route types. M4.2 resolves them with this rule:
 
-1. If the item has one or more active item-level routes in the branch, use those
-   stations.
-2. Otherwise, use the active category-level routes for the item's category in
+1. If the item has item-level routes in the branch, use the **active** item-level
+   stations. Category routing is not added as a fallback.
+2. Otherwise, use the **active** category-level routes for the item's category in
    the branch.
 3. If neither exists, the item is **unrouted**. No kitchen ticket is generated;
    the item remains on the order and visible to the POS.
 
-This rule is a product decision for M4.2 and must be confirmed before ticket
-generation is implemented. Alternatives (for example, treating category and item
-routes as additive) are not implemented.
+When multiple active routes match, the item is placed on each matching station's
+ticket. This is how an order can span several stations. See
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md) for the
+implemented resolver and idempotency behavior.
 
 ### Inactive stations and unavailable menu targets
 
 - Inactive stations keep their routes. The M4.2 resolver skips inactive
   stations; reactivating a station restores its existing routes.
+- An item-level route to an inactive station is unrouted; it does not fall back
+  to an active category route.
 - Archived menu items/categories and branch availability remain governed by the
   existing M3 menu resolution. M4.1 does not duplicate those rules.
 - Open tickets for a station that is later deactivated are not automatically
-  cancelled by M4.1. M4.2 must decide whether to keep, hide, or cancel them.
+  cancelled. They remain readable and completable by authorized kitchen staff.
 
 ### Multiple stations per order
 
-One ticket exists per `(order, station)`. An order whose items route to several
-stations therefore produces several tickets. An order can also retain items
-that are unrouted; those items have no ticket.
+One **active** ticket exists per `(order, station)`. An order whose items route
+to several stations therefore produces several active tickets. An order can
+also retain items that are unrouted; those items have no ticket.
+
+When all items on a station ticket are cancelled, the ticket remains as
+historical `cancelled` work. If new items are later routed to that station while
+the order is still accepted, M4.2 creates a new ticket generation rather than
+reopening the cancelled ticket.
 
 ## 4. Ticket integrity and idempotency
 
-- `kitchen_tickets` has `unique (order_id, station_id)`. This is the idempotency
-  anchor for M4.2: generation can use
-  `insert ... on conflict (order_id, station_id) do ...`.
+- `kitchen_tickets` has `unique (order_id, station_id, generation)` and a partial
+  unique index that allows at most one non-cancelled ticket per
+  `(order_id, station_id)`. M4.2 generation reuses the active ticket or inserts
+  the next generation after cancellation:
+  `insert ... on conflict (order_id, station_id, generation) do nothing`.
 - `kitchen_ticket_items` has `unique (ticket_id, order_item_id)` so the same
   order item cannot appear twice on one ticket.
 - `kitchen_ticket_items` carries `order_id`, `branch_id`, and
@@ -87,10 +100,11 @@ that are unrouted; those items have no ticket.
 - A ticket item therefore cannot reference an order item from another order,
   branch, or organization.
 - Ticket statuses are `pending`, `preparing`, `ready`, `completed`, and
-  `cancelled`. Cancelled tickets require `cancelled_at`,
-  `cancelled_by_staff_id`, and a non-empty `cancellation_reason`.
-- Lifecycle transitions and timestamp rules (for example, when `started_at` or
-  `completed_at` must be set) are deferred to M4.2.
+  `cancelled`. Cancelled tickets require `cancelled_at`, a non-empty
+  `cancellation_reason`, and either a staff actor or a `system` actor with a null
+  staff id.
+- M4.2 adds independent `kitchen_ticket_items.status` and lifecycle timestamps,
+  along with the transition, exact aggregate, and cancellation rules.
 
 ## 5. Authorization and RLS
 
@@ -110,13 +124,31 @@ that are unrouted; those items have no ticket.
 - Direct client writes are denied by omitted grants; M4.2 writes must go through
   reviewed RPCs.
 
-## 6. Deferred to later milestones
+## 6. Implemented in M4.2
+
+- Ticket generation on order acceptance, including idempotent and concurrent
+  behavior, with a new generation when a station ticket was previously cancelled.
+- Independent ticket-item lifecycle RPCs and exact aggregate-status guards.
+- Order and order-item cancellation propagation into kitchen state. Removal is
+  allowed for pending/preparing/ready kitchen work even when the order is already
+  preparing/ready; completed work blocks removal. Whole-order cancellation may
+  cancel completed work with audit history.
+- Staff/system cancellation actor domains with no order-submitter fallback, and
+  immutable cancellation attribution once recorded.
+- Audit records for ticket creation, ticket status changes, and item status
+  changes, including cancellation actor metadata.
+- Read-only `list_kitchen_routing_issues` diagnostics for inactive routing.
+- A final database invariant that recalculates parent ticket aggregates for
+  direct item-status writes and rejects active items under cancelled tickets.
+
+See [`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
+
+## 7. Deferred to later milestones
 
 - Station-specific staff assignments. M4.1 intentionally uses branch-level
   authorization. Station-level assignment can be added later if operations need
   kitchen staff to see only their own station's tickets.
-- Ticket generation during order creation or acceptance.
-- Ticket lifecycle RPCs and item-level KDS transitions.
-- Order status aggregation from ticket/item state.
 - Realtime publications/subscriptions and KDS frontend work.
+- Kitchen station management UI.
 - Guest ordering integration.
+- Hosted Development and Production migration rollout.
