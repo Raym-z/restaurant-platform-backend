@@ -22,7 +22,9 @@
 -- Apply this migration inside a transaction, as Supabase does. The fail-closed
 -- backfill relies on DDL and data changes rolling back together if an
 -- unassigned legacy row is encountered; do not run it with per-statement
--- autocommit.
+-- autocommit. The migration takes a SHARE lock on staff_branch_assignments
+-- immediately before the backfill so concurrent branch-assignment changes
+-- cannot interleave with the split.
 
 alter table public.staff_role_assignments
   add column branch_id uuid;
@@ -127,6 +129,14 @@ $$;
 
 revoke all on function private.backfill_legacy_branch_role_assignments()
   from public;
+
+-- Protect the actual migration backfill, not only later manual invocations of
+-- the helper. The 120000 migration transaction already holds ACCESS EXCLUSIVE
+-- on staff_role_assignments via ADD COLUMN. This SHARE lock closes the remaining
+-- race against concurrent staff_branch_assignments inserts, updates, and the
+-- role/assignment consistency trigger. It must be acquired before the backfill
+-- begins and is held until the migration transaction commits.
+lock table public.staff_branch_assignments in share mode;
 
 select private.backfill_legacy_branch_role_assignments();
 
@@ -291,7 +301,7 @@ comment on index public.staff_role_assignments_active_branch_role_unique is
   'At most one active branch-scoped assignment per staff member, role, and branch. Different branches may carry different roles.';
 
 comment on function private.backfill_legacy_branch_role_assignments() is
-  'Migration-time helper that splits legacy branch-scoped assignments across their active staff_branch_assignments. Fails rather than inventing a branch for an unassigned legacy row.';
+  'Migration-time helper that splits legacy branch-scoped assignments across their active staff_branch_assignments. The 120000 migration invokes it while holding a SHARE lock on staff_branch_assignments. Fails rather than inventing a branch for an unassigned legacy row.';
 
 -- Role resolution helpers. Branch-scoped roles now apply only when the
 -- assignment's branch_id equals the branch being checked. The active

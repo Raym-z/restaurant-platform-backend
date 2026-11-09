@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 import type pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
@@ -74,6 +76,28 @@ const advisoryLockCount = async (
     [pid],
   );
   return result.rows[0]!.count;
+};
+
+const rowLockIsFree = async (
+  client: pg.Client,
+  relation: string,
+  id: string,
+): Promise<boolean> => {
+  await client.query("begin");
+  try {
+    await client.query(
+      `select 1 from ${relation} where id = $1 for update nowait`,
+      [id],
+    );
+    await client.query("rollback");
+    return true;
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    if ((error as { code?: string }).code === "55P03") {
+      return false;
+    }
+    throw error;
+  }
 };
 
 describe("staff RPC concurrency", () => {
@@ -192,6 +216,58 @@ describe("staff RPC concurrency", () => {
     }
   });
 
+  it("acquires the organization advisory lock before the branch-assignment row lock", async () => {
+    const admin = await createClient();
+    const owner = await createClient();
+    track(admin, owner);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const staff = await addStaff(admin, {
+      organizationId: fixture.organizationId,
+      role: "cashier",
+      scope: "branch",
+      branchIds: [branchId],
+    });
+
+    const assignment = await admin.query<{ id: string }>(
+      `select id
+         from public.staff_branch_assignments
+        where staff_id = $1
+          and branch_id = $2
+          and revoked_at is null`,
+      [staff.staffId, branchId],
+    );
+    const assignmentId = assignment.rows[0]!.id;
+
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+    const adminPid = await backendPid(admin);
+    const ownerPid = await backendPid(owner);
+
+    await admin.query("begin");
+    try {
+      await admin.query(
+        "select 1 from public.staff_branch_assignments where id = $1 for update",
+        [assignmentId],
+      );
+
+      const revokePromise = owner.query<{ result: { status: string } }>(
+        "select public.revoke_staff_branch($1, $2) as result",
+        [assignmentId, "branch lock-order probe"],
+      );
+
+      expect(await waitForBlockedBy(admin, ownerPid, adminPid)).toBe(true);
+      expect(await advisoryLockCount(admin, ownerPid)).toBeGreaterThanOrEqual(1);
+
+      await admin.query("commit");
+      const revoked = await revokePromise;
+      expect(revoked.rows[0]!.result.status).toBe("revoked");
+    } catch (error) {
+      await admin.query("rollback").catch(() => undefined);
+      throw error;
+    }
+  });
+
   it("serializes a grant against an uncommitted revocation", async () => {
     const admin = await createClient();
     const ownerA = await createClient();
@@ -285,7 +361,8 @@ describe("staff RPC concurrency", () => {
     const admin = await createClient();
     const owner = await createClient();
     const platform = await createClient();
-    track(admin, owner, platform);
+    const probe = await createClient();
+    track(admin, owner, platform, probe);
 
     const fixture = await createOrgFixture(admin, { branchCount: 1 });
     const branchId = fixture.branchIds[0]!;
@@ -325,6 +402,13 @@ describe("staff RPC concurrency", () => {
       );
 
       expect(await waitForBlockedBy(admin, ownerPid, platformPid)).toBe(true);
+      expect(
+        await rowLockIsFree(
+          probe,
+          "public.staff_role_assignments",
+          assignmentId,
+        ),
+      ).toBe(true);
       await platform.query("commit");
 
       await expectPgError(revokePromise, "ORGANIZATION_NOT_OPERATIONAL");
@@ -349,7 +433,7 @@ describe("staff RPC concurrency", () => {
     expect(Number(audit.rows[0]!.count)).toBe(0);
   });
 
-  it("blocks branch-assignment writes while the legacy backfill locks the table", async () => {
+  it("the backfill helper's SHARE lock blocks concurrent branch-assignment writes", async () => {
     const admin = await createClient();
     const writer = await createClient();
     track(admin, writer);
@@ -374,6 +458,75 @@ describe("staff RPC concurrency", () => {
       await admin.query(
         "select private.backfill_legacy_branch_role_assignments()",
       );
+
+      const writePromise = writer.query(
+        `insert into public.staff_branch_assignments
+           (staff_id, organization_id, branch_id)
+         values ($1, $2, $3)`,
+        [staffId, fixture.organizationId, branchId],
+      );
+
+      expect(await waitForBlockedBy(admin, writerPid, adminPid)).toBe(true);
+      await admin.query("commit");
+      await writePromise;
+    } catch (error) {
+      await admin.query("rollback").catch(() => undefined);
+      throw error;
+    }
+
+    const assignments = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.staff_branch_assignments
+        where staff_id = $1
+          and branch_id = $2
+          and revoked_at is null`,
+      [staffId, branchId],
+    );
+    expect(Number(assignments.rows[0]!.count)).toBe(1);
+  });
+
+  it("takes the migration SHARE lock before invoking the legacy backfill", async () => {
+    const migrationPath = path.join(
+      process.cwd(),
+      "supabase/migrations/20261108120000_m2_branch_scoped_staff_roles.sql",
+    );
+    const migrationSql = readFileSync(migrationPath, "utf8");
+    const sequence =
+      /lock table\s+public\.staff_branch_assignments\s+in\s+share\s+mode\s*;\s*(?:--[^\n]*\n\s*)*select\s+private\.backfill_legacy_branch_role_assignments\s*\(\s*\)\s*;/i;
+    const match = migrationSql.match(sequence);
+    expect(match).not.toBeNull();
+
+    const lockMatch =
+      /lock table\s+public\.staff_branch_assignments\s+in\s+share\s+mode\s*;/i.exec(
+        match![0],
+      );
+    expect(lockMatch).not.toBeNull();
+
+    const admin = await createClient();
+    const writer = await createClient();
+    track(admin, writer);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const authUserId = await createAuthUser(admin);
+    const staffId = randomUUID();
+
+    await admin.query(
+      `insert into public.staff_profiles
+         (id, auth_user_id, organization_id, display_name, status, activated_at)
+       values ($1, $2, $3, 'Migration backfill lock target', 'active', now())`,
+      [staffId, authUserId, fixture.organizationId],
+    );
+
+    const adminPid = await backendPid(admin);
+    const writerPid = await backendPid(writer);
+
+    await admin.query("begin");
+    try {
+      // Execute the exact lock statement read from the migration source. If the
+      // migration's lock is removed or moved after the backfill invocation, the
+      // sequence assertion above fails deterministically.
+      await admin.query(lockMatch![0]);
 
       const writePromise = writer.query(
         `insert into public.staff_branch_assignments

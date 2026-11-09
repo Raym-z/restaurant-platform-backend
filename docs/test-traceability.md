@@ -47,11 +47,15 @@ and Agent 2 implementations land.
 | Concurrent revocations serialize and write one audit event | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
 | Concurrent branch-assignment revocations serialize and audit once | `tests/integration/security/staff-rpc-concurrency.test.ts` |
 | Organization lock precedes role-assignment row lock | `tests/integration/security/staff-rpc-concurrency.test.ts` |
+| Organization lock precedes branch-assignment row lock | `tests/integration/security/staff-rpc-concurrency.test.ts` |
 | Grant and revoke serialize without deadlock or lost audit | `tests/integration/security/staff-rpc-concurrency.test.ts` |
-| Backfill holds a SHARE lock on `staff_branch_assignments` | `tests/integration/security/staff-rpc-concurrency.test.ts`; `010_staff_branch_roles.test.sql` |
+| The 120000 migration takes its SHARE lock before the backfill and blocks concurrent writes | `tests/integration/security/staff-rpc-concurrency.test.ts`; `tests/contract/migration-rules.test.mjs` |
+| Backfill helper retains a SHARE lock for manual invocations | `tests/integration/security/staff-rpc-concurrency.test.ts`; `010_staff_branch_roles.test.sql` |
 | Active legacy role with only revoked assignments fails, then restores after reassignment | `supabase/tests/database/010_staff_branch_roles.test.sql` |
 | Organization-scoped `has_permission` validates supplied branch tenant/status | `supabase/tests/database/010_staff_branch_roles.test.sql` |
 | Missing and cross-tenant staff errors share code/detail | `tests/integration/security/cross-tenant-errors.test.ts` |
+| Deactivate/reactivate/profile-update missing and cross-tenant staff errors share detail | `tests/integration/security/cross-tenant-errors.test.ts` |
+| Implicit branch assignment is audited by `staff.role_granted` without a duplicate branch-assigned event | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
 | M2 branch helper carrying `branch_id` is the M3 integration fixture | `tests/integration/security/helpers.ts` |
 | Contract requires branch for branch-scoped grants | `src/contracts/common/contracts.test.ts` |
 | Revoke role response contract is typed | `src/contracts/common/contracts.test.ts` |

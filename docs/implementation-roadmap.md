@@ -56,6 +56,14 @@ otherwise active branch-scoped role. Permanent removal requires revoking the
 role. See `docs/schema/database-foundation.md` §5 for preflight, locking,
 backup, and recovery guidance for the one-way legacy backfill.
 
+The final concurrency migration,
+`20261109130000_m2_staff_rpc_concurrency_and_errors.sql`, corrects the
+`revoke_staff_role` lock order and serializes `revoke_staff_branch`.
+`20261109140000_m2_staff_admin_error_normalization.sql` normalizes the remaining
+staff-administration errors. Deployments must apply every migration through
+`20261109140000`, which includes `20261109130000`; stopping at
+`20261109120000` leaves the inverted lock order in place.
+
 **Outcome:** Secure access foundation.
 
 ### Phase 5: Restaurant configuration
@@ -85,9 +93,13 @@ role model. The integration fixture in
 `tests/integration/security/helpers.ts` writes
 `staff_role_assignments.branch_id` for every branch-scoped role and must be
 carried into the M3 integration; do not merge an older helper variant that
-omits `branch_id`. Branch-scoped grants require `branchId`, responses include
-`branchId`, and M3 must not assume that assigning a branch extends an existing
-role to that branch.
+omits `branch_id`. M3's `addStaff` fixtures already pass `branchIds`; the M2
+helper creates one branch assignment and one branch-scoped role row per branch,
+so it is compatible. Do not replace it with the stale helper that inserts
+`scope_type = 'branch'` without `branch_id`; that helper fails the
+branch-scope check on the M2.1 schema. Branch-scoped grants require `branchId`,
+responses include `branchId`, and M3 must not assume that assigning a branch
+extends an existing role to that branch.
 
 **Outcome:** Shared order lifecycle.
 

@@ -30,8 +30,18 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
 | `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`                 | Conflict-safe branch-assignment consistency trigger, serialized role revocation, branch/organization FK index                          |
 | `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`                | Branch-revocation serialization, role-revocation lock order, backfill SHARE lock, permission branch validation, normalized errors     |
+| `20261109140000_m2_staff_admin_error_normalization.sql`                 | Missing/cross-tenant normalization for staff deactivation, reactivation, and profile updates                                          |
 
 Agent 1 migrations are never edited.
+
+**Minimum migration range:** Apply every migration through
+`20261109140000_m2_staff_admin_error_normalization.sql`, which includes
+`20261109130000_m2_staff_rpc_concurrency_and_errors.sql`. Do **not** stop at
+`20261109120000_m2_branch_scoped_staff_roles_fixes.sql`: that leaves the earlier
+`revoke_staff_role` lock order in place (role row lock before the organization
+advisory lock) and retains the grant-vs-revoke deadlock risk. The final F2
+lock-order correction is in `20261109130000`; `20261109140000` adds the staff
+administration error normalization.
 
 ## 2. Authorization helpers
 
@@ -138,6 +148,10 @@ There is no ownership-transfer RPC or permission in the initial release.
 - `deactivate_staff(staff_id, reason)`, `reactivate_staff(staff_id)`.
 - `update_staff_profile(staff_id, display_name)`.
 
+Missing and cross-tenant staff IDs share the same `Staff member was not found`
+detail for `deactivate_staff`, `reactivate_staff`, and `update_staff_profile`.
+Authorization is still enforced before any mutation.
+
 Branch-scoped authorization still requires both the role row and an active
 branch assignment. A database trigger records the branch assignment whenever
 an active branch-scoped role is inserted, so direct SQL and RPC provisioning
@@ -163,6 +177,14 @@ records the branch assignment; it does not extend an existing branch-scoped
 role to the newly assigned branch. Grant the role for that branch explicitly.
 A branch assignment without any matching role grants no authorization and no
 branch visibility.
+
+**Implicit branch-assignment audit:** when a branch-scoped role grant creates
+the matching active branch assignment, `staff.role_granted` is the authoritative
+audit event. It records the branch in the event's `branch_id` column and in
+`metadata.branch_id` and `metadata.scope_type`. No separate
+`staff.branch_assigned` event is emitted for that implicit creation; an explicit
+`assign_staff_branch` call still emits its own `staff.branch_assigned` event.
+The role-grant event and the assignment are written in the same transaction.
 
 **Inactive-branch grants:** `grant_staff_role` validates organization
 membership but does not currently reject inactive branches. A branch role
@@ -380,6 +402,10 @@ hashes.
   - missing subscription fail-closed behavior,
   - consistent `SUBSCRIPTION_RESTRICTED` / `ORGANIZATION_NOT_OPERATIONAL` codes,
   - normalized menu/staff cross-tenant errors,
+  - normalized staff deactivation/reactivation/profile-update cross-tenant errors,
+  - migration 120000 SHARE lock before the legacy backfill,
+  - implicit branch-assignment audit policy,
+  - branch-revocation organization-lock ordering,
   - normalized idempotency values,
   - session-wide revocation versus concurrent token issuance,
   - safe rate-limit bucket retention (active windows preserved, expired windows cleaned),

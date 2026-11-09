@@ -262,6 +262,10 @@ Subscription billing is separate from restaurant order payment.
 Audit records capture sensitive or consequential actions, including:
 
 - Staff role assignments, branch assignments, and access-scope changes.
+  When a branch-scoped role grant creates the matching branch assignment
+  implicitly, the `staff.role_granted` event is authoritative and records the
+  branch; no duplicate `staff.branch_assigned` event is emitted for that
+  implicit creation.
 - Branch and organization configuration changes.
 - Order cancellation, adjustment, and exceptional correction.
 - Payment recording, void, correction, or refund.

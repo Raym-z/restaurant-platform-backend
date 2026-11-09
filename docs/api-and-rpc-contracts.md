@@ -524,7 +524,9 @@ For an organization-scoped Admin, omit `branchId` (or send `null`). The response
 
 The backend must use centralized permission definitions rather than scattered frontend role checks.
 
-Staff role/branch administration normalizes missing and cross-tenant resources to the same error detail for each resource class (`Staff member was not found`, `Branch was not found`, `Role assignment was not found`, or `Branch assignment was not found`) so callers cannot distinguish a missing row from another tenant's row.
+Staff role/branch administration normalizes missing and cross-tenant resources to the same error detail for each resource class (`Staff member was not found`, `Branch was not found`, `Role assignment was not found`, or `Branch assignment was not found`) so callers cannot distinguish a missing row from another tenant's row. The same `Staff member was not found` detail applies to `deactivate_staff`, `reactivate_staff`, and `update_staff_profile`.
+
+When a branch-scoped role grant creates the matching branch assignment implicitly, `staff.role_granted` is the authoritative audit event and carries the branch in `branch_id` and metadata. No separate `staff.branch_assigned` event is emitted for the implicit creation.
 
 `revoke_staff_role` responses are typed:
 

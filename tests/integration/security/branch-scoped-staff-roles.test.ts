@@ -778,6 +778,74 @@ describe("role audit branch context", () => {
       scope_type: "branch",
     });
   });
+
+  it("treats staff.role_granted as authoritative when it creates the branch assignment", async () => {
+    const admin = await createClient();
+    const owner = await createClient();
+    track(admin, owner);
+
+    const fixture = await createOrgFixture(admin, { branchCount: 1 });
+    const branchId = fixture.branchIds[0]!;
+    const authUserId = await createAuthUser(admin);
+    const staffId = randomUUID();
+
+    await admin.query(
+      `insert into public.staff_profiles
+         (id, auth_user_id, organization_id, display_name, status, activated_at)
+       values ($1, $2, $3, 'Implicit assignment', 'active', now())`,
+      [staffId, authUserId, fixture.organizationId],
+    );
+
+    await authenticateAs(owner, fixture.ownerAuthUserId);
+    const grant = await owner.query<{ result: { assignmentId: string } }>(
+      "select public.grant_staff_role($1, 'manager', 'branch', 'implicit assignment', $2) as result",
+      [staffId, branchId],
+    );
+    expect(grant.rows[0]!.result.assignmentId).toEqual(expect.any(String));
+
+    const branchAssignment = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.staff_branch_assignments
+        where staff_id = $1
+          and branch_id = $2
+          and revoked_at is null`,
+      [staffId, branchId],
+    );
+    expect(Number(branchAssignment.rows[0]!.count)).toBe(1);
+
+    // The role-grant event is the authoritative audit record for the implicit
+    // branch assignment; it carries the branch in both the audit column and
+    // metadata. No duplicate staff.branch_assigned event is emitted.
+    const roleAudit = await admin.query<{
+      branch_id: string | null;
+      metadata_branch: string | null;
+      scope_type: string | null;
+    }>(
+      `select branch_id,
+              metadata ->> 'branch_id' as metadata_branch,
+              metadata ->> 'scope_type' as scope_type
+         from public.audit_events
+        where action = 'staff.role_granted'
+          and target_id = $1
+        order by created_at desc
+        limit 1`,
+      [staffId],
+    );
+    expect(roleAudit.rows[0]).toMatchObject({
+      branch_id: branchId,
+      metadata_branch: branchId,
+      scope_type: "branch",
+    });
+
+    const branchAudit = await admin.query<{ count: string }>(
+      `select count(*)::text as count
+         from public.audit_events
+        where action = 'staff.branch_assigned'
+          and target_id = $1`,
+      [staffId],
+    );
+    expect(Number(branchAudit.rows[0]!.count)).toBe(0);
+  });
 });
 
 describe("concurrent role revocation", () => {

@@ -72,7 +72,7 @@ RLS is enabled on all `public` tables, including reference/lookup tables. No pol
 
 Agent 2 migrations should use later timestamps and merge after the schema. Do not edit applied migrations.
 
-M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5. The follow-up `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` makes the consistency trigger conflict-safe, serializes concurrent revocations, and adds the branch/organization FK index.
+M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5. The follow-up `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` makes the consistency trigger conflict-safe, serializes concurrent revocations, and adds the branch/organization FK index. `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` fixes the revocation lock order and serializes branch-assignment revocation; `20261109140000_m2_staff_admin_error_normalization.sql` normalizes the remaining staff-administration missing/cross-tenant errors.
 
 ## 4. Tenant consistency
 
@@ -139,7 +139,7 @@ A staff member may therefore be Manager at Branch A and Cashier at Branch B, but
 
 ### Legacy branch-role backfill
 
-Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically. Follow-up migrations `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` and `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` make the branch-assignment consistency trigger conflict-safe, serialize concurrent revocations, fix revocation lock order, and protect the backfill against concurrent branch-assignment changes.
+Migration `20261108120000_m2_branch_scoped_staff_roles.sql` backfills legacy branch-scoped rows (which had no `branch_id`) deterministically. The migration takes `LOCK TABLE public.staff_branch_assignments IN SHARE MODE` immediately before invoking the backfill, so concurrent branch-assignment writes cannot interleave with the split. Follow-up migrations `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`, `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`, and `20261109140000_m2_staff_admin_error_normalization.sql` make the branch-assignment consistency trigger conflict-safe, serialize concurrent revocations, fix revocation lock order, normalize staff-administration errors, and retain the function-level backfill lock for later manual invocations.
 
 1. For each legacy active assignment, its target branches are the staff member's active `staff_branch_assignments`.
 2. The original row receives the first branch and additional rows are inserted for the remaining branches, preserving the assigned actor, reason, `assigned_at`, `created_at`, and revocation state. The original row's `updated_at` is refreshed by the table's `updated_at` trigger; duplicate rows copy the pre-migration `updated_at`.
@@ -210,7 +210,8 @@ After the role is mapped, the normal lifecycle applies: revoking the branch assi
 
 #### Locking, maintenance, backup, and recovery
 
-- **Locking:** `ALTER TABLE ... ADD COLUMN` takes `ACCESS EXCLUSIVE` on `public.staff_role_assignments` for the whole migration transaction. Reads and writes to that table block until commit. The backfill is row-by-row and the new indexes are built non-concurrently. The backfill function also takes a `SHARE` lock on `public.staff_branch_assignments`, so branch-assignment writes (including `assign_staff_branch`, `revoke_staff_branch`, and the role-consistency trigger) wait until the backfill transaction completes. Plan a maintenance/low-traffic window and avoid concurrent staff-role changes during the run.
+- **Locking:** `ALTER TABLE ... ADD COLUMN` takes `ACCESS EXCLUSIVE` on `public.staff_role_assignments` for the whole migration transaction. Reads and writes to that table block until commit. The backfill is row-by-row and the new indexes are built non-concurrently. The migration takes `LOCK TABLE public.staff_branch_assignments IN SHARE MODE` immediately before invoking the backfill, so branch-assignment writes (including `assign_staff_branch`, `revoke_staff_branch`, and the role-consistency trigger) wait until the migration transaction completes. The helper retains the same lock for later manual invocations. Plan a maintenance/low-traffic window and avoid concurrent staff-role changes during the run.
+- **Minimum migration range:** Apply every migration through `20261109140000_m2_staff_admin_error_normalization.sql`, which includes `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`. Do **not** stop at `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`: that leaves the earlier `revoke_staff_role` lock order in place (role row lock before the organization advisory lock) and retains the grant-vs-revoke deadlock risk. The final F2 lock-order correction is in `20261109130000`; `20261109140000` adds the staff-administration error normalization.
 - **Backup:** before applying, keep a restorable copy, for example:
   ```sql
   create schema if not exists migration_backup;
@@ -227,7 +228,7 @@ After the role is mapped, the normal lifecycle applies: revoking the branch assi
 ### Owner invariant
 
 - The database enforces **at most one active Owner per organization** via a partial unique index on active `owner` assignments.
-- The database does **not** enforce that an organization always retains at least one Owner. Agent 2 must prevent loss of the last active Owner through role revocation, staff deactivation, account deletion, or ownership transfer.
+- The database also prevents removal or deactivation of the last active Owner. `staff_role_assignments_guard_last_owner` blocks revoking, replacing, or deleting the last active Owner assignment, and `staff_profiles_guard_last_owner` blocks deactivating the last active Owner's staff profile. Both raise `LAST_OWNER_PROTECTED`. Application workflows must surface that error and must not bypass the triggers; ownership transfer remains unavailable in the initial release.
 
 ## 6. Menu availability
 

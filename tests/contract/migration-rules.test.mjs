@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   analyzeSql,
@@ -175,5 +177,35 @@ describe('migration scanner: retained security checks', () => {
     const analysis = analyzeSql(sql);
     expect(rules(analysis.destructive)).toContain('TRUNCATE');
     expect(rules(analysis.security)).toContain('PRIVATE GRANT');
+  });
+});
+
+describe('migration guard: M2.1 legacy backfill locking', () => {
+  it('takes the branch-assignment SHARE lock before the legacy backfill', () => {
+    const sql = readFileSync(
+      path.resolve(
+        process.cwd(),
+        'supabase/migrations/20261108120000_m2_branch_scoped_staff_roles.sql',
+      ),
+      'utf8',
+    );
+
+    expect(sql).toMatch(
+      /lock table\s+public\.staff_branch_assignments\s+in\s+share\s+mode\s*;\s*(?:--[^\n]*\n\s*)*select\s+private\.backfill_legacy_branch_role_assignments\s*\(\s*\)\s*;/i,
+    );
+  });
+
+  it('keeps the function-level lock for later manual backfill calls', () => {
+    const sql = readFileSync(
+      path.resolve(
+        process.cwd(),
+        'supabase/migrations/20261109130000_m2_staff_rpc_concurrency_and_errors.sql',
+      ),
+      'utf8',
+    );
+
+    expect(sql).toMatch(
+      /lock table\s+public\.staff_branch_assignments\s+in\s+share\s+mode\s*;/i,
+    );
   });
 });

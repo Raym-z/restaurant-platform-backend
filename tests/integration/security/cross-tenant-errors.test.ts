@@ -304,6 +304,66 @@ describe("cross-tenant error consistency", () => {
       ),
     );
 
+    const expectStaffNotFound = (
+      missing: Awaited<ReturnType<typeof capturePgError>>,
+      foreign: Awaited<ReturnType<typeof capturePgError>>,
+    ): void => {
+      expectSame(missing, foreign);
+      expect(missing.detail).toBe("Staff member was not found");
+    };
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.deactivate_staff($1, $2)", [
+          randomUUID(),
+          "missing",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.deactivate_staff($1, $2)", [
+          secondStaff.staffId,
+          "other tenant",
+        ]),
+      ),
+    );
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.reactivate_staff($1)", [randomUUID()]),
+      ),
+      await capturePgError(
+        owner.query("select public.reactivate_staff($1)", [
+          secondStaff.staffId,
+        ]),
+      ),
+    );
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.update_staff_profile($1, $2)", [
+          randomUUID(),
+          "Missing staff",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.update_staff_profile($1, $2)", [
+          secondStaff.staffId,
+          "Other tenant",
+        ]),
+      ),
+    );
+
+    const worker = await createClient();
+    clients.push(worker);
+    await authenticateAs(worker, firstStaff.authUserId);
+    await expectPgError(
+      worker.query("select public.deactivate_staff($1, $2)", [
+        first.ownerStaffId,
+        "not an org admin",
+      ]),
+      "PERMISSION_DENIED",
+    );
+
     expect(firstRole.rows[0]!.id).toEqual(expect.any(String));
   });
 
