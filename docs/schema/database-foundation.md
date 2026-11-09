@@ -395,3 +395,24 @@ The migrations were applied in order to a disposable PostgreSQL 18 database with
 - Default privileges on newly created public tables.
 - Invalid IANA timezone rejection.
 - Absence of per-branch order display numbering and guest-token foreign keys.
+
+## 16. M4 kitchen infrastructure
+
+M4.1 adds `kitchen_stations`, `kitchen_station_menu_categories`,
+`kitchen_station_menu_items`, `kitchen_tickets`, and `kitchen_ticket_items`.
+
+- Stations are branch-scoped and names are unique per branch using a
+  case-insensitive trimmed comparison.
+- Category and item menu routes are separate branch-scoped tables. Item-level
+  routing is intended to take precedence over category routing in the M4.2
+  ticket resolver.
+- `kitchen_tickets` has one row per `(order, station)` and is the idempotency
+  anchor for M4.2 generation.
+- Ticket items use composite foreign keys to guarantee the order item belongs to
+  the ticket's order, branch, and organization.
+- RLS allows Owner/Admin/Manager/Kitchen Staff to read kitchen data in a branch;
+  Cashier and anonymous clients receive no access. Client writes remain
+  RPC-only.
+
+See [`../m4-kitchen-infrastructure.md`](../m4-kitchen-infrastructure.md) for the
+routing and lifecycle decisions.

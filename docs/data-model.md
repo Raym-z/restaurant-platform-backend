@@ -346,6 +346,12 @@ The following rules were reviewed and approved for the initial release. They ref
 - An order must not be considered served merely because its items are Ready.
 - The backend coordinates and validates item-level and order-level status transitions. The exact transition matrix and exceptional paths remain to be specified.
 
+M4.1 adds the KDS storage foundation without generating tickets or changing
+order lifecycle behavior: branch-scoped kitchen stations, category/item menu
+routing, and one kitchen ticket per `(order, station)` with ticket items linked
+to immutable order-item snapshots. See
+[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md).
+
 ### 11.7 Bill Finalization and Subsequent Orders
 
 - Bill finalization is an explicit staff action. It is not triggered automatically by an order becoming served or by a customer requesting checkout.
