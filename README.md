@@ -71,6 +71,7 @@ The initial release supports **cash payments only**. The system records the amou
 | `docs/security-guidelines.md` | Backend security requirements. |
 | `docs/implementation-roadmap.md` | Recommended implementation sequence. |
 | `docs/backend-services.md` | RLS, authorization helpers, RPCs, Edge Functions, and service blockers. |
+| `docs/m3-core-pos-operations.md` | M3 tables, dining sessions, orders, state machine, and RPC contracts. |
 
 ## Development status
 

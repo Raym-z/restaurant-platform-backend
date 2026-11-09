@@ -308,12 +308,12 @@ line_total           = effective_unit_price * item_quantity
 - `effective_unit_price_minor` and `line_total_minor` are generated columns.
 - Negative modifier deltas are permitted by the schema but must keep the effective unit price nonnegative. The final sign policy remains unresolved.
 - No independent modifier quantity is implemented initially.
-- No deferred trigger validates the modifier summary against `order_item_modifiers` rows. That validation boundary remains Agent 2's responsibility.
-- No deferred trigger validates order subtotal against the sum of items.
+- M3 order RPCs validate the modifier selection and recalculate order subtotal from non-cancelled item lines while the order is mutable. No deferred trigger validates the aggregate sums; privileged direct writes remain a database-owner concern.
+- Order subtotal is recalculated while pending/accepted and immutable once preparation starts.
 
 ## 11. Order numbering
 
-No order number column exists in the initial schema. Global, per-branch, per-day, and display-code options require a decision and a follow-up migration. Agent 2 must not assume a display number exists.
+The foundation schema has no human display-number column. M3 adds a stable, non-sequential `orders.order_reference` (`ORD-########`) for operational correlation. Per-branch, per-day, and display-code numbering still require a decision and a follow-up migration; consumers must not treat `order_reference` as a per-branch sequence.
 
 ## 12. Audit
 
@@ -350,7 +350,7 @@ Intentionally not seeded:
 3. Bill reopen/void lifecycle details.
 4. Payment void/correction/refund and reconciliation.
 5. Idempotency scope per operation and retention.
-6. Order/order-item transition matrix and cancellation billing effects.
+6. Item-level transition matrix and cancellation billing effects (order-level transitions are implemented by M3).
 7. Tax/service/discount calculation order and rounding.
 8. Guest token expiry/rotation/cleanup.
 9. Order display numbering.
@@ -383,4 +383,4 @@ The migrations were applied in order to a disposable PostgreSQL 18 database with
 - `private` schema isolation and `service_role` access.
 - Default privileges on newly created public tables.
 - Invalid IANA timezone rejection.
-- Absence of order display numbering and guest-token foreign keys.
+- Absence of per-branch order display numbering and guest-token foreign keys.

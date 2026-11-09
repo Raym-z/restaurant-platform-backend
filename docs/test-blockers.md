@@ -7,7 +7,7 @@ here. A skipped test must reference a `BLK-###` entry and the reason; otherwise
 | ID | Blocked area | Why blocked | Affected suites |
 |---|---|---|---|
 | BLK-001 | Exact billing arithmetic: tax base, tax/service ordering, compounding, inclusivity, discount scope/stacking, rounding | The bill-calculation contract is not approved | `250_rpc_billing`, `260_rpc_payment`, billing integration |
-| BLK-002 | Unapproved order/item transition matrix, cancellation effects on bills, KDS notification behavior | Exact transition rules are deferred | `240_rpc_orders`, order integration |
+| BLK-002 | Item-level preparation transitions, cancellation effects on bills, KDS notification behavior | M3 approved the order-level transition matrix; item-level and billing/KDS effects remain deferred | `240_rpc_orders`, order integration |
 | BLK-003 | Guest token expiry duration, rotation, cleanup schedule | Expiry policy is not approved | `130_rls_guest_session`, guest integration |
 | BLK-004 | Waitlist behavior under subscription restriction; notification timing and no-show thresholds | Queue workflow/restriction rules are not specified | `270_rpc_waitlist`, `280_rpc_subscription` |
 | BLK-005 | Granular role-to-permission mappings beyond documented role scope | The detailed permission matrix is not approved | `210_rpc_staff_access`, authorization tests |
