@@ -92,7 +92,7 @@ a newly added enum value in the same transaction that added it.
   - closing requires a timestamp and staff member;
   - closing is blocked while non-terminal orders remain.
 
-### `20261109140000_m3_order_insert_terminal_state_guard.sql`
+### `20261109140100_m3_order_insert_terminal_state_guard.sql`
 
 - Extracts terminal-state validation into
   `private.assert_order_terminal_state(...)`.
@@ -376,30 +376,34 @@ M2.1 is delivered by these migrations:
   index, and internal-helper grant cleanup.
 - `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` — later M2
   remediation for staff RPC concurrency, lock order, backfill locking, and
-  error normalization. This migration was present in the M2 worktree when this
-  boundary was re-verified; re-check the M2 branch before integration.
+  error normalization.
+- `20261109140000_m2_staff_admin_error_normalization.sql` — normalizes
+  missing/cross-tenant errors for staff deactivation, reactivation, and profile
+  updates.
 
 M3 only calls the existing `authz` helper signatures, so the combined sequence
 applies cleanly. M3 explicit role arrays remain valid: organization-scoped
 roles keep organization-wide reach and branch-scoped roles are restricted to
 their assigned active branch.
 
-The following combined orders were verified, each with the later
-`20261109130000` M2 remediation applied after the follow-up migration:
+Integration note: M2 and M3 each originally shipped a migration at timestamp
+`20261109140000`. The combined branch renumbers the independent M3 guard to
+`20261109140100_m3_order_insert_terminal_state_guard.sql`; its SQL is unchanged.
+This keeps the repository's unique, strictly increasing migration filenames and
+places the guard after the M2 error-normalization migration. It has no M2
+dependency and is safe in that position.
 
-1. Main → M3 (`20261108110700`–`20261108111100` and
-   `20261109140000_m3_order_insert_terminal_state_guard.sql`) → M2
-   `20261108120000` → M2 `20261109120000` → M2 `20261109130000`.
-2. Main → M2 `20261108120000` → M2 `20261109120000` → M2 `20261109130000` → M3
-   (`20261108110700`–`20261108111100` and `20261109140000`).
-3. Main → M2 `20261108120000` → M3 (`20261108110700`–`20261108111100` and
-   `20261109140000`) → M2 `20261109120000` → M2 `20261109130000`.
+The following combined orders are verified by the integration suite:
 
-The naturally sorted combined order was also verified: Main → M3
-`20261108110700`–`20261108111100` → M2 original → M2 follow-up → M2 later
-remediation → M3 `20261109140000`. Because the new M3 guard sorts after the M2
-migrations, a deployment that applies migrations only in filename order runs it
-last; it has no M2 dependency and is safe in that position.
+1. M2.1 then M3: Main → M2 `20261108120000` → M2 `20261109120000` → M2
+   `20261109130000` → M2 `20261109140000` → M3 `20261108110700`–`20261108111100`
+   → M3 `20261109140100`.
+2. M3 then M2.1: Main → M3 `20261108110700`–`20261108111100` → M3
+   `20261109140100` → M2 `20261108120000` → M2 `20261109120000` → M2
+   `20261109130000` → M2 `20261109140000`.
+3. Naturally sorted filename order: Main → M3 `20261108110700`–`20261108111100`
+   → M2 original → M2 follow-up → M2 later remediation → M2 error normalization
+   → M3 `20261109140100`.
 
 M3 integration test fixtures do depend on the branch-scoped role schema from
 M2.1: `tests/integration/security/helpers.ts` must use the M2 version that

@@ -27,14 +27,29 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108110400_security_remediation_phase2.sql`                       | Organization locking, missing-subscription fail-closed, session lock, rate-limit retention, platform-admin plan access                  |
 | `20261108110500_security_remediation_error_consistency_menu_staff.sql` | Cross-tenant not-found normalization for menu and staff administration RPCs                                                             |
 | `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
+| `20261108110700_m3_order_schema_extensions.sql`                        | M3: `completed` order status, stable `order_reference`, `completed_at`, guarded reference uniqueness                                    |
+| `20261108110800_m3_order_state_guards.sql`                             | M3: order/item snapshot and transition guards, terminal-state item requirements, dining-session closure guard                          |
+| `20261108110900_m3_pos_read_helpers.sql`                               | M3: private POS read/pricing helpers, including inactive-branch history access                                                          |
+| `20261108111000_m3_table_session_rpcs.sql`                             | M3: table availability and dining-session read/open/close RPCs                                                                         |
+| `20261108111100_m3_order_rpcs.sql`                                     | M3: transactional order create/get/list, item modification, transition, and cancellation RPCs                                        |
 | `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
 | `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`                 | Conflict-safe branch-assignment consistency trigger, serialized role revocation, branch/organization FK index                          |
 | `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`                | Branch-revocation serialization, role-revocation lock order, backfill SHARE lock, permission branch validation, normalized errors     |
 | `20261109140000_m2_staff_admin_error_normalization.sql`                 | Missing/cross-tenant normalization for staff deactivation, reactivation, and profile updates                                          |
+| `20261109140100_m3_order_insert_terminal_state_guard.sql`               | M3: defense-in-depth `BEFORE INSERT` terminal-state guard for privileged order inserts                                                 |
 
 Agent 1 migrations are never edited.
 
-**Minimum migration range:** Apply every migration through
+**Combined M2.1 + M3 history:** M2 and M3 originally both used timestamp
+`20261109140000`. The integration branch keeps M2's
+`20261109140000_m2_staff_admin_error_normalization.sql` at its original name and
+renumbers the independent M3 terminal-state guard to
+`20261109140100_m3_order_insert_terminal_state_guard.sql` (SQL unchanged). This
+restores a unique, strictly increasing migration sequence. Apply the full set
+through `20261109140100`; the M3 guard has no dependency on M2 and sorts safely
+last.
+
+**Minimum migration range:** Apply every M2 migration through
 `20261109140000_m2_staff_admin_error_normalization.sql`, which includes
 `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`. Do **not** stop at
 `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`: that leaves the earlier
@@ -368,13 +383,24 @@ hashes.
 
 ## 8. Validation performed
 
-- All 24 pre-M3 migrations (11 Agent 1 + 13 service/remediation) applied cleanly
-  in order to a disposable PostgreSQL 18 database with mock `auth` functions and
-  Supabase-like `anon`, `authenticated`, and `service_role` roles, including a
-  run with pgcrypto installed in `public`.
-- The five M3 migrations were parsed with the PostgreSQL 18 parser, but they were
-  not applied to a running database in the M3 environment because Docker/PostgreSQL
-  was unavailable. M3 database tests remain blocked until a real stack is available.
+- All 34 combined M2.1 + M3 migrations applied cleanly to disposable
+  PostgreSQL 18 databases in three sequences: natural filename order,
+  M2.1-then-M3, and M3-then-M2.1. Each database used mock `auth` functions and
+  Supabase-like `anon`, `authenticated`, and `service_role` roles.
+- The full integration suite (74 tests across 15 files) passed serially against
+  all three migration-order databases, covering M2.1 branch-scoped roles, M2
+  concurrency/lock-order, cross-tenant errors, backfill locking, M3 table/session
+  and order/terminal-state behavior, RLS, and helper grants.
+- Retry-safe migrations (`20261108110700`, `20261109140000`, and
+  `20261109140100`) re-applied cleanly. Catalog checks confirmed RLS on all 38
+  public tables, no `private` function execution for `anon`/`authenticated`, and
+  consistent `staff_role_assignments` branch scoping.
+- Official local Supabase (Docker) validation remains outstanding on this
+  machine because the Docker WSL 2/Virtual Machine Platform backend is
+  unavailable. Consequently `supabase db reset`, `supabase db lint`, pgTAP
+  database tests, pgTAP-based RLS manifest population, and Edge Function tests
+  were not executed and must run in an environment with official Supabase
+  infrastructure before approval.
 - Positive and negative checks passed for:
   - owner/admin/manager branch scope,
   - cross-branch denial,

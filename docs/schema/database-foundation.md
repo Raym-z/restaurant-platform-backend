@@ -74,6 +74,17 @@ Agent 2 migrations should use later timestamps and merge after the schema. Do no
 
 M2.1 adds `20261108120000_m2_branch_scoped_staff_roles.sql`, which introduces `staff_role_assignments.branch_id`, the per-scope uniqueness rules, the branch/role consistency trigger, and the deterministic legacy backfill described in §5. The follow-up `20261109120000_m2_branch_scoped_staff_roles_fixes.sql` makes the consistency trigger conflict-safe, serializes concurrent revocations, and adds the branch/organization FK index. `20261109130000_m2_staff_rpc_concurrency_and_errors.sql` fixes the revocation lock order and serializes branch-assignment revocation; `20261109140000_m2_staff_admin_error_normalization.sql` normalizes the remaining staff-administration missing/cross-tenant errors.
 
+M3 adds `20261108110700_m3_order_schema_extensions.sql`,
+`20261108110800_m3_order_state_guards.sql`,
+`20261108110900_m3_pos_read_helpers.sql`,
+`20261108111000_m3_table_session_rpcs.sql`, and
+`20261108111100_m3_order_rpcs.sql` after the security-remediation migrations.
+The combined branch renumbers M3's terminal-state guard from
+`20261109140000` to `20261109140100_m3_order_insert_terminal_state_guard.sql`
+to avoid colliding with M2's error-normalization migration; the SQL is
+unchanged. See `docs/m3-core-pos-operations.md` for the combined ordering
+evidence.
+
 ## 4. Tenant consistency
 
 Branch-scoped tables store both `organization_id` and `branch_id` and use composite foreign keys:
