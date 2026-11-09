@@ -23,6 +23,43 @@ and Agent 2 implementations land.
 | `T-SEC-*` | `security-guidelines.md` §13 | Ready (static), database portions blocked |
 | `T-CI-*` | `implementation-roadmap.md` Phase 1, Phase 11 | Ready |
 
+## M2.1 per-branch role coverage
+
+| Scenario | Test |
+|---|---|
+| Manager at Branch A and Cashier at Branch B resolve per branch | `supabase/tests/database/010_staff_branch_roles.test.sql`; `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Manager at A cannot obtain Manager at B | both files above |
+| Cashier at B cannot obtain Cashier at A | both files above |
+| Organization Owner/Admin remain organization-wide | both files above |
+| Revoked role or branch assignment grants no access | both files above |
+| Inactive staff or inactive branch denied | both files above |
+| Cross-organization and foreign-branch assignment rejected | both files above |
+| Duplicate active assignment and revoked replacement | both files above |
+| One-active-Owner invariant retained | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Legacy backfill split and fail-closed behavior | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Revoked legacy row with no assignment history fails closed | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Branch-scoped Admin denied organization-level operations | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Branch assignment without a role grants no access | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Direct branch role insert and branch move maintain assignments | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Branch-aware `has_permission` behavior | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Grant/revoke audit events include branch context | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Concurrent different-role grants at one branch both succeed | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Concurrent revocations serialize and write one audit event | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| Concurrent branch-assignment revocations serialize and audit once | `tests/integration/security/staff-rpc-concurrency.test.ts` |
+| Organization lock precedes role-assignment row lock | `tests/integration/security/staff-rpc-concurrency.test.ts` |
+| Organization lock precedes branch-assignment row lock | `tests/integration/security/staff-rpc-concurrency.test.ts` |
+| Grant and revoke serialize without deadlock or lost audit | `tests/integration/security/staff-rpc-concurrency.test.ts` |
+| The 120000 migration takes its SHARE lock before the backfill and blocks concurrent writes | `tests/integration/security/staff-rpc-concurrency.test.ts`; `tests/contract/migration-rules.test.mjs` |
+| Backfill helper retains a SHARE lock for manual invocations | `tests/integration/security/staff-rpc-concurrency.test.ts`; `010_staff_branch_roles.test.sql` |
+| Active legacy role with only revoked assignments fails, then restores after reassignment | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Organization-scoped `has_permission` validates supplied branch tenant/status | `supabase/tests/database/010_staff_branch_roles.test.sql` |
+| Missing and cross-tenant staff errors share code/detail | `tests/integration/security/cross-tenant-errors.test.ts` |
+| Deactivate/reactivate/profile-update missing and cross-tenant staff errors share detail | `tests/integration/security/cross-tenant-errors.test.ts` |
+| Implicit branch assignment is audited by `staff.role_granted` without a duplicate branch-assigned event | `tests/integration/security/branch-scoped-staff-roles.test.ts` |
+| M2 branch helper carrying `branch_id` is the M3 integration fixture | `tests/integration/security/helpers.ts` |
+| Contract requires branch for branch-scoped grants | `src/contracts/common/contracts.test.ts` |
+| Revoke role response contract is typed | `src/contracts/common/contracts.test.ts` |
+
 ## Special-attention coverage
 
 | Requirement | Primary suites |

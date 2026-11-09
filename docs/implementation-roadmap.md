@@ -39,6 +39,31 @@ Implement the backend in dependency order. Each phase should be reviewed and tes
 - Test cross-tenant denial paths.
 - Review privileged function grants.
 
+**M2.1 implementation note:** staff role assignments are branch-aware. A role
+row is either organization-scoped with no branch, or branch-scoped with one
+branch. The same staff member may hold different roles at different branches.
+Legacy branch-scoped rows are deterministically split across their active
+branch assignments before the new uniqueness and check constraints are
+enforced. The five canonical roles and the one-active-Owner invariant are
+unchanged.
+
+A follow-up migration, `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`,
+makes the branch-assignment consistency trigger conflict-safe for concurrent
+grants, serializes concurrent revocations, adds the branch/organization FK
+index, and removes unnecessary execute grants on internal helpers. Branch
+assignment revocation is a suspension: re-assigning the branch restores an
+otherwise active branch-scoped role. Permanent removal requires revoking the
+role. See `docs/schema/database-foundation.md` §5 for preflight, locking,
+backup, and recovery guidance for the one-way legacy backfill.
+
+The final concurrency migration,
+`20261109130000_m2_staff_rpc_concurrency_and_errors.sql`, corrects the
+`revoke_staff_role` lock order and serializes `revoke_staff_branch`.
+`20261109140000_m2_staff_admin_error_normalization.sql` normalizes the remaining
+staff-administration errors. Deployments must apply every migration through
+`20261109140000`, which includes `20261109130000`; stopping at
+`20261109120000` leaves the inverted lock order in place.
+
 **Outcome:** Secure access foundation.
 
 ### Phase 5: Restaurant configuration
@@ -62,6 +87,19 @@ Implement the backend in dependency order. Each phase should be reviewed and tes
 - Implement idempotent order submission.
 - Define realtime notifications and recovery requirements.
 - Test POS/ordering/KDS integration.
+
+**M3 integration note:** M3 order/KDS work must consume the M2.1 branch-scoped
+role model. The integration fixture in
+`tests/integration/security/helpers.ts` writes
+`staff_role_assignments.branch_id` for every branch-scoped role and must be
+carried into the M3 integration; do not merge an older helper variant that
+omits `branch_id`. M3's `addStaff` fixtures already pass `branchIds`; the M2
+helper creates one branch assignment and one branch-scoped role row per branch,
+so it is compatible. Do not replace it with the stale helper that inserts
+`scope_type = 'branch'` without `branch_id`; that helper fails the
+branch-scope check on the M2.1 schema. Branch-scoped grants require `branchId`,
+responses include `branchId`, and M3 must not assume that assigning a branch
+extends an existing role to that branch.
 
 **Outcome:** Shared order lifecycle.
 

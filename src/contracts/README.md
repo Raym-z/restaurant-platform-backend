@@ -18,8 +18,14 @@ schemas shared by the backend, POS, ordering, and waitlist applications.
 - API responses use the success/error envelopes in `common/api-response.ts`.
 - Error codes are a closed union in `common/errors.ts`.
 - Roles are limited to Owner, Admin, Manager, Cashier, and Kitchen Staff.
-- Role assignments carry an explicit `organization` or `branch` scope. An Admin
-  is never assumed organization-wide.
+- Role assignments carry an explicit `organization` or `branch` scope and a
+  nullable `branchId`. Branch-scoped assignments require the branch; organization
+  scope requires `null`. An Admin is never assumed organization-wide.
+- `grant_staff_role` requests follow the same rule: `branchId` is required for
+  branch scope and rejected for organization scope. `revoke_staff_role` responses
+  are typed as `revoked` or `already_revoked`, always include `branchId` (nullable
+  for organization scope), and are validated by
+  `RevokeStaffRoleResponseSchema`.
 - Permission keys are intentionally treated as opaque strings here. The
   approved role-to-permission mapping is maintained separately and is not
   seeded by this package.

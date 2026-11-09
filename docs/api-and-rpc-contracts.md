@@ -494,9 +494,52 @@ Owner has organization-wide authority.
 
 Admin may be organization-wide or branch-assigned according to their configured scope.
 
-Manager, Cashier, and Kitchen Staff are restricted to assigned branches.
+Manager, Cashier, and Kitchen Staff are restricted to the specific branch on each role assignment and also require an active branch assignment for that branch.
+
+A role assignment is either organization-scoped with no branch, or branch-scoped with exactly one branch in the same organization. The same staff member may be Manager at Branch A and Cashier at Branch B. A branch-scoped role never applies at another branch, even when the staff member is assigned to multiple branches.
+
+`grant_staff_role` shape:
+
+```json
+{
+  "staffId": "uuid",
+  "role": "manager",
+  "scope": "branch",
+  "branchId": "uuid",
+  "reason": "Branch manager"
+}
+```
+
+For an organization-scoped Admin, omit `branchId` (or send `null`). The response always states the branch, using `null` for organization scope:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "roleCode": "manager",
+  "scope": "branch",
+  "branchId": "uuid"
+}
+```
 
 The backend must use centralized permission definitions rather than scattered frontend role checks.
+
+Staff role/branch administration normalizes missing and cross-tenant resources to the same error detail for each resource class (`Staff member was not found`, `Branch was not found`, `Role assignment was not found`, or `Branch assignment was not found`) so callers cannot distinguish a missing row from another tenant's row. The same `Staff member was not found` detail applies to `deactivate_staff`, `reactivate_staff`, and `update_staff_profile`.
+
+When a branch-scoped role grant creates the matching branch assignment implicitly, `staff.role_granted` is the authoritative audit event and carries the branch in `branch_id` and metadata. No separate `staff.branch_assigned` event is emitted for the implicit creation.
+
+`revoke_staff_role` responses are typed:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "branchId": "uuid-or-null",
+  "status": "revoked"
+}
+```
+
+`status` is `revoked` or `already_revoked`. Concurrent revocations serialize: exactly one caller receives `revoked`, later callers receive `already_revoked`, and only one audit event is written.
 
 Only the Owner may initiate subscription renewal, upgrades, downgrades, or plan changes.
 
@@ -554,8 +597,8 @@ A restricted organization cannot create or modify branches.
 | Invite staff         | Edge Function + RPC | Trusted invitation workflow and database membership creation                    |
 | Create staff account | Edge Function + RPC | Coordinate Auth identity and organization membership                            |
 | Update staff profile | RPC                 | Validate permissions and update allowed fields                                  |
-| Assign roles         | RPC                 | Validate assignable roles and actor permissions                                 |
-| Assign branches      | RPC                 | Validate organization membership and branch scope                               |
+| Assign roles         | RPC                 | Validate assignable roles, explicit scope/branch, and actor permissions       |
+| Assign branches      | RPC                 | Validate organization membership and branch scope; does not grant a role       |
 | Deactivate staff     | RPC                 | Revoke or restrict organization access without destroying historical references |
 | Reactivate staff     | RPC                 | Restore access after permission and account checks                              |
 
@@ -564,6 +607,8 @@ Staff invitations may use Supabase Auth invitation functionality through a trust
 Never allow a frontend to assign itself Owner, Admin, or Platform Admin privileges.
 
 Role and branch assignment changes must be audited.
+
+Assigning a branch role records the requested `branch_id` on the role row and ensures an active branch assignment exists for the same staff member and branch. Branch assignments still grant no permission by themselves; revoking one removes branch access even while a role row remains active. Re-assigning the same branch restores that still-active role, so a branch-assignment revocation is a suspension, not a permanent removal; revoke the role assignment for permanent removal. Assigning a branch on its own does not extend an existing branch-scoped role to that branch; grant the role for the branch explicitly. A role granted on an inactive branch is inert until the branch is reactivated. Different roles may be assigned at different branches for the same staff member.
 
 ### 8.3 POS — Menu Management
 

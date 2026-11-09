@@ -30,15 +30,18 @@ Staff access is determined by:
 - Branch assignments or explicitly approved organization-wide scope.
 - Resource ownership, tenant consistency, and current resource state.
 
-Initial role templates:
-- Organization Owner.
-- Organization Administrator.
-- Branch Manager.
-- Cashier.
-- Kitchen Staff.
-- Host/Queue Staff.
+Initial roles:
+- Owner (organization-wide).
+- Admin (organization-wide or branch-scoped).
+- Manager (branch-scoped).
+- Cashier (branch-scoped).
+- Kitchen Staff (branch-scoped).
 
-Role names are templates; backend permissions must be granular and explicit. Staff cannot switch organizations. They may switch between branches only when their assignments and permissions allow it.
+Role names are fixed for the initial release; backend permissions must be granular and explicit. Staff cannot switch organizations. They may switch between branches only when their role assignments and branch assignments allow it.
+
+Each role assignment carries its scope explicitly. Branch-scoped assignments include the branch identifier; organization-scoped assignments do not. A staff member may hold different roles at different branches, for example Manager at Branch 1 and Cashier at Branch 2. A role assigned at Branch 1 never grants that role at Branch 2. Branch-scoped authorization requires both the branch-specific role assignment and an active branch assignment for that branch. Revoked assignments, inactive staff, and inactive branches grant no access.
+
+Revoking a branch assignment suspends access; the branch-scoped role row remains active, and re-assigning the same branch restores that role. To remove access permanently, revoke the role assignment as well. Assigning a branch does not itself grant a role; each role must be granted for the branch explicitly. A branch role granted on an inactive branch is inert until the branch is reactivated.
 
 ## 5. Customer authorization
 

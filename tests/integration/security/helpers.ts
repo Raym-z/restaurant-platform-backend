@@ -1,3 +1,8 @@
+// Shared M2/M3 integration fixtures.
+//
+// addStaff() writes staff_role_assignments.branch_id for every branch-scoped
+// role. Carry this revision into the M3 integration; do not merge an older
+// helper variant that omitted branch_id.
 import { randomUUID } from "node:crypto";
 
 import type pg from "pg";
@@ -145,20 +150,43 @@ export const addStaff = async (
     [staffId, authUserId, options.organizationId, options.role],
   );
 
-  await client.query(
-    `insert into public.staff_role_assignments
-       (staff_id, organization_id, role_code, scope_type)
-     values ($1, $2, $3, $4)`,
-    [staffId, options.organizationId, options.role, options.scope],
-  );
+  const branchIds = options.branchIds ?? [];
 
-  for (const branchId of options.branchIds ?? []) {
+  if (options.scope === "branch" && branchIds.length === 0) {
+    throw new Error("Branch-scoped staff fixtures require at least one branch");
+  }
+
+  for (const branchId of branchIds) {
     await client.query(
       `insert into public.staff_branch_assignments
          (staff_id, organization_id, branch_id)
        values ($1, $2, $3)`,
       [staffId, options.organizationId, branchId],
     );
+  }
+
+  if (options.scope === "organization") {
+    await client.query(
+      `insert into public.staff_role_assignments
+         (staff_id, organization_id, role_code, scope_type, branch_id)
+       values ($1, $2, $3, $4, null)`,
+      [staffId, options.organizationId, options.role, options.scope],
+    );
+  } else {
+    for (const branchId of branchIds) {
+      await client.query(
+        `insert into public.staff_role_assignments
+           (staff_id, organization_id, role_code, scope_type, branch_id)
+         values ($1, $2, $3, $4, $5)`,
+        [
+          staffId,
+          options.organizationId,
+          options.role,
+          options.scope,
+          branchId,
+        ],
+      );
+    }
   }
 
   return { authUserId, staffId };
@@ -270,4 +298,27 @@ export const expectPgError = async (
   }
 
   throw new Error(`Expected ${code}, but the operation succeeded`);
+};
+
+export type CapturedPgError = {
+  message: string;
+  detail: string | undefined;
+  code: string | undefined;
+};
+
+export const capturePgError = async (
+  promise: Promise<unknown>,
+): Promise<CapturedPgError> => {
+  try {
+    await promise;
+  } catch (error) {
+    const record = error as { message?: string; detail?: string; code?: string };
+    return {
+      message: record.message ?? String(error),
+      detail: record.detail,
+      code: record.code,
+    };
+  }
+
+  throw new Error("Expected an error, but the operation succeeded");
 };

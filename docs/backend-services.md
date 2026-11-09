@@ -27,8 +27,21 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261108110400_security_remediation_phase2.sql`                       | Organization locking, missing-subscription fail-closed, session lock, rate-limit retention, platform-admin plan access                  |
 | `20261108110500_security_remediation_error_consistency_menu_staff.sql` | Cross-tenant not-found normalization for menu and staff administration RPCs                                                             |
 | `20261108110600_security_remediation_phase2_fixes.sql`                 | Advisory org locks, safe rate-limit cleanup, waitlist lock order, token-validation/revocation locking, customer bucket hashing          |
+| `20261108120000_m2_branch_scoped_staff_roles.sql`                       | Per-branch role assignments, deterministic legacy backfill, branch-aware authz helpers, branch-aware grant/revoke RPCs                  |
+| `20261109120000_m2_branch_scoped_staff_roles_fixes.sql`                 | Conflict-safe branch-assignment consistency trigger, serialized role revocation, branch/organization FK index                          |
+| `20261109130000_m2_staff_rpc_concurrency_and_errors.sql`                | Branch-revocation serialization, role-revocation lock order, backfill SHARE lock, permission branch validation, normalized errors     |
+| `20261109140000_m2_staff_admin_error_normalization.sql`                 | Missing/cross-tenant normalization for staff deactivation, reactivation, and profile updates                                          |
 
 Agent 1 migrations are never edited.
+
+**Minimum migration range:** Apply every migration through
+`20261109140000_m2_staff_admin_error_normalization.sql`, which includes
+`20261109130000_m2_staff_rpc_concurrency_and_errors.sql`. Do **not** stop at
+`20261109120000_m2_branch_scoped_staff_roles_fixes.sql`: that leaves the earlier
+`revoke_staff_role` lock order in place (role row lock before the organization
+advisory lock) and retains the grant-vs-revoke deadlock risk. The final F2
+lock-order correction is in `20261109130000`; `20261109140000` adds the staff
+administration error normalization.
 
 ## 2. Authorization helpers
 
@@ -59,7 +72,24 @@ Scope enforcement follows documented role scope:
 - Admin is organization-wide only when the assignment is organization-scoped.
 - Manager, Cashier, and Kitchen Staff are branch-scoped.
 - Branch assignments grant no permission by themselves; a branch-scoped role
-  assignment and an active branch assignment are both required.
+  assignment and an active branch assignment for the same branch are both
+  required.
+- A branch-scoped role applies only at `staff_role_assignments.branch_id`.
+  Holding Manager at Branch A never grants Manager at Branch B.
+- Organization-scoped roles ignore branch assignment reach and apply to every
+  active branch in the organization.
+- Revoked role assignments, revoked branch assignments, inactive staff, and
+  inactive branches all deny access.
+
+`authz.has_branch_access(uuid)`, `authz.has_branch_role(uuid, text[])`, and
+`authz.has_permission(text, uuid)` are the branch-aware resolution points.
+`authz.has_org_role(text[])` remains deliberately organization-scope-only, so a
+branch-scoped Admin does not gain organization administration rights.
+For an organization-scoped permission check, a non-null `p_branch_id` must
+identify an active branch in the staff member's organization; a null branch means
+the caller is checking an organization-wide permission without branch context.
+Branch-scoped permission checks always require the matching active branch and an
+active branch assignment.
 
 ## 3. Last-Owner protection
 
@@ -105,13 +135,61 @@ There is no ownership-transfer RPC or permission in the initial release.
 
 ### Staff
 
-- `grant_staff_role(staff_id, role_code, scope_type, reason)` — Owner only may
-  grant Admin; Owner role cannot be granted.
-- `revoke_staff_role(assignment_id, reason)`.
+- `grant_staff_role(staff_id, role_code, scope_type, reason, branch_id)` —
+  Owner only may grant Admin; Owner role cannot be granted. Branch-scoped roles
+  require `branch_id` in the caller's organization and atomically ensure an
+  active branch assignment for that staff/branch. Organization-scoped grants
+  must omit `branch_id`. The response is
+  `{assignmentId, staffId, roleCode, scope, branchId}`.
+- `revoke_staff_role(assignment_id, reason)` — revocation is audited with the
+  assignment's branch context and takes effect immediately.
 - `assign_staff_branch(staff_id, branch_id)`.
 - `revoke_staff_branch(assignment_id, reason)`.
 - `deactivate_staff(staff_id, reason)`, `reactivate_staff(staff_id)`.
 - `update_staff_profile(staff_id, display_name)`.
+
+Missing and cross-tenant staff IDs share the same `Staff member was not found`
+detail for `deactivate_staff`, `reactivate_staff`, and `update_staff_profile`.
+Authorization is still enforced before any mutation.
+
+Branch-scoped authorization still requires both the role row and an active
+branch assignment. A database trigger records the branch assignment whenever
+an active branch-scoped role is inserted, so direct SQL and RPC provisioning
+remain consistent. The trigger uses `ON CONFLICT DO NOTHING` against the active
+branch-assignment unique index, so concurrent grants of different roles at the
+same branch do not produce a false role conflict. Concurrent role revocations
+and concurrent branch-assignment revocations lock the assignment row and write a
+single audit event; the second caller returns `already_revoked`. Revocation RPCs
+resolve the actor, validate the target organization, and acquire the
+organization advisory lock before locking the assignment row, consistent with
+the documented organization → row lock order.
+
+**Lifecycle semantics:** revoking a branch assignment is a suspension, not a
+permanent role removal. The role row remains active but is denied while the
+assignment is revoked. Re-assigning the same branch restores that still-active
+role. To remove access permanently, revoke the role assignment itself (and
+optionally the branch assignment). The same applies to branch deactivation: a
+role on an inactive branch is inert and becomes effective again if the branch
+is reactivated.
+
+**Assigning a branch does not grant a role.** `assign_staff_branch` only
+records the branch assignment; it does not extend an existing branch-scoped
+role to the newly assigned branch. Grant the role for that branch explicitly.
+A branch assignment without any matching role grants no authorization and no
+branch visibility.
+
+**Implicit branch-assignment audit:** when a branch-scoped role grant creates
+the matching active branch assignment, `staff.role_granted` is the authoritative
+audit event. It records the branch in the event's `branch_id` column and in
+`metadata.branch_id` and `metadata.scope_type`. No separate
+`staff.branch_assigned` event is emitted for that implicit creation; an explicit
+`assign_staff_branch` call still emits its own `staff.branch_assigned` event.
+The role-grant event and the assignment are written in the same transaction.
+
+**Inactive-branch grants:** `grant_staff_role` validates organization
+membership but does not currently reject inactive branches. A branch role
+granted on an inactive branch is inert until the branch is reactivated. Treat
+this as pre-provisioning; do not present it as active access in the POS UI.
 
 ### Menu and tables
 
@@ -324,6 +402,10 @@ hashes.
   - missing subscription fail-closed behavior,
   - consistent `SUBSCRIPTION_RESTRICTED` / `ORGANIZATION_NOT_OPERATIONAL` codes,
   - normalized menu/staff cross-tenant errors,
+  - normalized staff deactivation/reactivation/profile-update cross-tenant errors,
+  - migration 120000 SHARE lock before the legacy backfill,
+  - implicit branch-assignment audit policy,
+  - branch-revocation organization-lock ordering,
   - normalized idempotency values,
   - session-wide revocation versus concurrent token issuance,
   - safe rate-limit bucket retention (active windows preserved, expired windows cleaned),

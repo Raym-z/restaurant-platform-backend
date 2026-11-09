@@ -5,7 +5,9 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { createClient } from "../setup/db.js";
 import {
+  addStaff,
   authenticateAs,
+  capturePgError,
   createCustomer,
   createOrgFixture,
   createTable,
@@ -154,6 +156,215 @@ describe("cross-tenant error consistency", () => {
       ),
       "BRANCH_NOT_FOUND",
     );
+  });
+
+  it("uses identical details for missing and other-tenant staff resources", async () => {
+    const admin = await createClient();
+    const owner = await createClient();
+    clients.push(admin, owner);
+
+    const first = await createOrgFixture(admin, { branchCount: 1 });
+    const second = await createOrgFixture(admin, { branchCount: 1 });
+    const firstStaff = await addStaff(admin, {
+      organizationId: first.organizationId,
+      role: "cashier",
+      scope: "branch",
+      branchIds: [first.branchIds[0]!],
+    });
+    const secondStaff = await addStaff(admin, {
+      organizationId: second.organizationId,
+      role: "cashier",
+      scope: "branch",
+      branchIds: [second.branchIds[0]!],
+    });
+
+    const firstRole = await admin.query<{ id: string }>(
+      `select id
+         from public.staff_role_assignments
+        where staff_id = $1
+          and role_code = 'cashier'
+          and revoked_at is null`,
+      [firstStaff.staffId],
+    );
+    const secondRole = await admin.query<{ id: string }>(
+      `select id
+         from public.staff_role_assignments
+        where staff_id = $1
+          and role_code = 'cashier'
+          and revoked_at is null`,
+      [secondStaff.staffId],
+    );
+    const secondBranch = await admin.query<{ id: string }>(
+      `select id
+         from public.staff_branch_assignments
+        where staff_id = $1
+          and branch_id = $2
+          and revoked_at is null`,
+      [secondStaff.staffId, second.branchIds[0]],
+    );
+
+    await authenticateAs(owner, first.ownerAuthUserId);
+
+    const expectSame = (
+      missing: Awaited<ReturnType<typeof capturePgError>>,
+      foreign: Awaited<ReturnType<typeof capturePgError>>,
+    ): void => {
+      expect(missing.message).toBe(foreign.message);
+      expect(missing.detail).toBe(foreign.detail);
+      expect(missing.code).toBe(foreign.code);
+    };
+
+    expectSame(
+      await capturePgError(
+        owner.query(
+          "select public.grant_staff_role($1, 'manager', 'branch', null, $2)",
+          [randomUUID(), first.branchIds[0]],
+        ),
+      ),
+      await capturePgError(
+        owner.query(
+          "select public.grant_staff_role($1, 'manager', 'branch', null, $2)",
+          [secondStaff.staffId, first.branchIds[0]],
+        ),
+      ),
+    );
+
+    expectSame(
+      await capturePgError(
+        owner.query(
+          "select public.grant_staff_role($1, 'manager', 'branch', null, $2)",
+          [firstStaff.staffId, randomUUID()],
+        ),
+      ),
+      await capturePgError(
+        owner.query(
+          "select public.grant_staff_role($1, 'manager', 'branch', null, $2)",
+          [firstStaff.staffId, second.branchIds[0]],
+        ),
+      ),
+    );
+
+    expectSame(
+      await capturePgError(
+        owner.query("select public.assign_staff_branch($1, $2)", [
+          randomUUID(),
+          first.branchIds[0],
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.assign_staff_branch($1, $2)", [
+          secondStaff.staffId,
+          first.branchIds[0],
+        ]),
+      ),
+    );
+
+    expectSame(
+      await capturePgError(
+        owner.query("select public.assign_staff_branch($1, $2)", [
+          firstStaff.staffId,
+          randomUUID(),
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.assign_staff_branch($1, $2)", [
+          firstStaff.staffId,
+          second.branchIds[0],
+        ]),
+      ),
+    );
+
+    expectSame(
+      await capturePgError(
+        owner.query("select public.revoke_staff_role($1, $2)", [
+          randomUUID(),
+          "missing",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.revoke_staff_role($1, $2)", [
+          secondRole.rows[0]!.id,
+          "other tenant",
+        ]),
+      ),
+    );
+
+    expectSame(
+      await capturePgError(
+        owner.query("select public.revoke_staff_branch($1, $2)", [
+          randomUUID(),
+          "missing",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.revoke_staff_branch($1, $2)", [
+          secondBranch.rows[0]!.id,
+          "other tenant",
+        ]),
+      ),
+    );
+
+    const expectStaffNotFound = (
+      missing: Awaited<ReturnType<typeof capturePgError>>,
+      foreign: Awaited<ReturnType<typeof capturePgError>>,
+    ): void => {
+      expectSame(missing, foreign);
+      expect(missing.detail).toBe("Staff member was not found");
+    };
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.deactivate_staff($1, $2)", [
+          randomUUID(),
+          "missing",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.deactivate_staff($1, $2)", [
+          secondStaff.staffId,
+          "other tenant",
+        ]),
+      ),
+    );
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.reactivate_staff($1)", [randomUUID()]),
+      ),
+      await capturePgError(
+        owner.query("select public.reactivate_staff($1)", [
+          secondStaff.staffId,
+        ]),
+      ),
+    );
+
+    expectStaffNotFound(
+      await capturePgError(
+        owner.query("select public.update_staff_profile($1, $2)", [
+          randomUUID(),
+          "Missing staff",
+        ]),
+      ),
+      await capturePgError(
+        owner.query("select public.update_staff_profile($1, $2)", [
+          secondStaff.staffId,
+          "Other tenant",
+        ]),
+      ),
+    );
+
+    const worker = await createClient();
+    clients.push(worker);
+    await authenticateAs(worker, firstStaff.authUserId);
+    await expectPgError(
+      worker.query("select public.deactivate_staff($1, $2)", [
+        first.ownerStaffId,
+        "not an org admin",
+      ]),
+      "PERMISSION_DENIED",
+    );
+
+    expect(firstRole.rows[0]!.id).toEqual(expect.any(String));
   });
 
   it("does not reveal another tenant's guest token through revocation errors", async () => {
