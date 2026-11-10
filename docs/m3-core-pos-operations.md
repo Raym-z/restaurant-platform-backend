@@ -143,8 +143,8 @@ Terminal alternative: `cancelled`.
 | From | To | Actor roles |
 | --- | --- | --- |
 | `pending` | `accepted` | owner, admin, manager, cashier |
-| `accepted` | `preparing` | owner, admin, manager, kitchen_staff |
-| `preparing` | `ready` | owner, admin, manager, kitchen_staff |
+| `accepted` | `preparing` | owner, admin, manager |
+| `preparing` | `ready` | owner, admin, manager |
 | `ready` | `served` | owner, admin, manager, cashier |
 | `served` | `completed` | owner, admin, manager, cashier |
 | `pending` / `accepted` / `preparing` / `ready` | `cancelled` | owner, admin, manager, cashier |
@@ -158,8 +158,11 @@ Notes:
 - The transition trigger rejects any transition not listed above, including
   same-status transitions.
 - Order transitions cascade to non-cancelled items. Reaching `served` or
-  `completed` requires every non-cancelled item to be `served`; item-level
-  independent KDS transitions remain deferred.
+  `completed` requires every non-cancelled item to be `served`.
+- M4.3 changes only the order-level `preparing`/`ready` role restriction:
+  Kitchen Staff can no longer drive those order states; they use the M4.2
+  kitchen ticket-item RPCs. Kitchen state is independent and is not overwritten
+  by the order cascade.
 - An order with zero non-cancelled items cannot reach `served` or `completed`.
   Such an order must be cancelled. Removing the last item is allowed so staff can
   correct an order before cancelling it.
@@ -182,7 +185,7 @@ organization/branch IDs are requests, not proof of access.
 | Read orders | active staff with branch access; inactive branches: organization-scoped staff (read-only history) |
 | Add/update/remove item | branch role owner/admin/manager/cashier + mutable order |
 | Accept order | owner/admin/manager/cashier |
-| Preparing / ready | owner/admin/manager/kitchen_staff |
+| Preparing / ready | owner/admin/manager (M4.3; Kitchen Staff use kitchen RPCs) |
 | Served / completed | owner/admin/manager/cashier |
 | Cancel order | owner/admin/manager/cashier + mandatory reason |
 | Add item / increase quantity while restricted | blocked with `SUBSCRIPTION_RESTRICTED` / `ORGANIZATION_NOT_OPERATIONAL` |
@@ -429,10 +432,15 @@ introduce a parallel permission model.
 
 ## 13. Known limitations
 
-- Independent item-level KDS transitions are not implemented. Order-level
-  transitions cascade to non-cancelled items, order `served`/`completed`
-  requires at least one non-cancelled item and every such item to be `served`,
-  and cancellation terminates remaining items.
+- Independent kitchen ticket-item transitions are implemented in M4.2 and are
+  exposed through the M4.2/M4.3 kitchen APIs. Order-level transitions still
+  cascade to non-cancelled `order_items`; order `served`/`completed` requires at
+  least one non-cancelled item and every such item to be `served`.
+  Cancellation terminates remaining items.
+- M4.3 denies Kitchen Staff the order-level `preparing`/`ready` transitions.
+  Kitchen Staff must use the kitchen ticket-item RPCs; Owner/Admin/Manager retain
+  the order transitions. Kitchen completion does not serve, complete, or pay an
+  order.
 - Removal is a soft item cancellation so historical snapshots remain auditable.
   Removing the last active item leaves a zero-item order that can only be
   cancelled; it cannot reach `served` or `completed`.
@@ -452,9 +460,10 @@ introduce a parallel permission model.
   treat both `PERMISSION_DENIED` and `BRANCH_NOT_FOUND`/`BRANCH_ACCESS_DENIED`
   as authorization denial; operational writes never succeed on an inactive
   branch.
-- Realtime is not configured (`BLK-008`). Current RPCs remain correct because
-  PostgreSQL is authoritative; clients must poll/refetch until a reviewed
-  tenant/branch subscription design exists.
+- Realtime is not verified (`BLK-008`). M4.3 adds the kitchen publication and
+  channel contract, but branch-isolation delivery tests require a running local
+  Supabase/Docker stack. Current RPCs remain correct because PostgreSQL is
+  authoritative; clients must poll/refetch until realtime is verified.
 - Per-branch human order display numbering remains deferred; `order_reference`
   is stable but not a per-branch sequence.
 - Database integration tests were executed against a disposable local PostgreSQL

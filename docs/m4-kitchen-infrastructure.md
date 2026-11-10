@@ -8,6 +8,11 @@ M4.2 builds on this foundation with ticket generation, independent item
 preparation state, ticket aggregation, cancellation propagation, and lifecycle
 RPCs. See [`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
 
+M4.3 adds application-facing station/routing management RPCs, the bounded KDS
+read API, the kitchen Realtime publication, and the order-versus-kitchen state
+ownership policy. See [`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md)
+and [`realtime-architecture.md`](./realtime-architecture.md).
+
 ## 1. Schema
 
 | Table | Purpose |
@@ -110,19 +115,22 @@ reopening the cancelled ticket.
 
 | Table | Owner/Admin/Manager | Kitchen Staff | Cashier | Other branch | Other organization | Anon |
 | --- | --- | --- | --- | --- | --- | --- |
-| `kitchen_stations` | read in branch | read in branch | none | none | none | none |
-| `kitchen_station_menu_categories` | read in branch | read in branch | none | none | none | none |
-| `kitchen_station_menu_items` | read in branch | read in branch | none | none | none | none |
-| `kitchen_tickets` | read in branch | read in branch | none | none | none | none |
-| `kitchen_ticket_items` | read in branch | read in branch | none | none | none | none |
+| `kitchen_stations` | read; configure via RPC | read only | none | none | none | none |
+| `kitchen_station_menu_categories` | read; configure via RPC | read only | none | none | none | none |
+| `kitchen_station_menu_items` | read; configure via RPC | read only | none | none | none | none |
+| `kitchen_tickets` | read; lifecycle via RPC | read; lifecycle via RPC | none | none | none | none |
+| `kitchen_ticket_items` | read; lifecycle via RPC | read; lifecycle via RPC | none | none | none | none |
 
 - Policies reuse `authz.has_branch_role(branch_id, array['owner','admin','manager','kitchen_staff'])`.
 - Organization-scoped Owner/Admin access therefore covers all branches in the
   organization; branch-scoped roles are limited to their assigned branch.
 - Kitchen Staff do not gain access to unrelated staff records, subscriptions, or
   administrative tables. Existing M2/M3 policies are unchanged.
-- Direct client writes are denied by omitted grants; M4.2 writes must go through
-  reviewed RPCs.
+- Direct client writes are denied by omitted grants; kitchen writes go through
+  reviewed RPCs only.
+- M4.3 configuration writes require an Owner/Admin/Manager branch role. Kitchen
+  Staff may read station configuration but cannot create, rename, deactivate,
+  reactivate, or route stations. Cashier and anonymous clients are denied.
 
 ## 6. Implemented in M4.2
 
@@ -143,12 +151,45 @@ reopening the cancelled ticket.
 
 See [`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
 
-## 7. Deferred to later milestones
+## 7. Implemented in M4.3
 
-- Station-specific staff assignments. M4.1 intentionally uses branch-level
-  authorization. Station-level assignment can be added later if operations need
-  kitchen staff to see only their own station's tickets.
-- Realtime publications/subscriptions and KDS frontend work.
-- Kitchen station management UI.
+- Application-facing station management RPCs:
+  `create_kitchen_station`, `update_kitchen_station`,
+  `deactivate_kitchen_station`, `reactivate_kitchen_station`, and
+  `list_kitchen_stations`.
+- Category and item route management:
+  `add_kitchen_station_category_route`,
+  `remove_kitchen_station_category_route`,
+  `add_kitchen_station_item_route`, and
+  `remove_kitchen_station_item_route`.
+- Every configuration write is audited through `private.audit_write`.
+  Duplicate station names and duplicate routes return `RESOURCE_CONFLICT`.
+  Cross-organization station/menu references are treated as not found.
+  Routes cannot be added to an inactive station; existing routes can still be
+  removed while the station is inactive.
+- Deactivation remains configuration-only. It prevents new routing and never
+  cancels existing tickets. Existing tickets stay readable and completable, and
+  reactivation restores the existing routes.
+- A bounded KDS read API: `list_kitchen_tickets` and `get_kitchen_ticket`.
+  Responses include station name, order reference/status/source, table label,
+  item notes, modifier snapshots, and `updatedAt`, and exclude all financial
+  fields.
+- A kitchen Realtime publication for tickets, ticket items, stations, and route
+  tables, with route `DELETE` support through `replica identity full`.
+- The order/kitchen ownership policy: POS owns order `preparing`/`ready`;
+  Kitchen Staff use kitchen ticket-item RPCs and can no longer move the order
+  lifecycle to those states.
+
+Realtime delivery and branch isolation are implemented but **not verified** in
+this environment. `BLK-008` remains open and polling is the supported fallback.
+
+## 8. Deferred to later milestones
+
+- Station-specific staff assignments. M4.3 uses branch-wide kitchen access.
+  Station-level assignment can be added later if operations need kitchen staff
+  to see only their own station's tickets.
+- KDS frontend work and realtime UI integration.
+- Verified realtime delivery and two-tenant branch-isolation tests (`BLK-008`).
+- Kitchen station management UI (the backend RPCs exist).
 - Guest ordering integration.
 - Hosted Development and Production migration rollout.

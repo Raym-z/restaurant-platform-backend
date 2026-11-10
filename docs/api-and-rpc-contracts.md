@@ -681,6 +681,8 @@ session closure.
 | Mark order served              | RPC                     | Validate at least one non-cancelled item and all such items are served |
 | Cancel order                   | RPC                     | Validate cancellation rules and record reason     |
 | Cancel individual item         | RPC                     | Validate preparation state and permissions; reject completed kitchen work |
+| View kitchen board             | RPC                     | Return a bounded branch/station ticket board without financial data |
+| Configure kitchen stations     | RPC                     | Owner/Admin/Manager only; audited; preserve existing tickets |
 | View kitchen routing issues    | RPC                     | Report inactive item/category routes in an authorized branch |
 | Correct order                  | RPC                     | Apply explicit audited correction workflow        |
 | Subscribe to order updates     | Realtime                | Deliver authorized order changes                  |
@@ -801,6 +803,162 @@ Order responses expose `subtotalMinor` (historical item snapshot, retained for
 audit after cancellation) and `payableSubtotalMinor` (zero for cancelled orders).
 Session summaries exclude cancelled orders from their payable total. See
 [`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md).
+
+#### M4.3 — KDS read and station management
+
+M4.3 provides contract-shaped KDS reads and application-facing configuration.
+
+**`public.list_kitchen_tickets`**
+
+```sql
+public.list_kitchen_tickets(
+  p_branch_id uuid,
+  p_station_id uuid default null,
+  p_statuses public.kitchen_ticket_status[] default null,
+  p_limit integer default 50,
+  p_offset integer default 0,
+  p_from timestamptz default null,
+  p_to timestamptz default null
+) returns jsonb
+```
+
+- Authorization: Owner/Admin/Manager/Kitchen Staff in the branch; Cashier and
+  anonymous clients are denied.
+- Default statuses are `pending`, `preparing`, and `ready`.
+- `completed` and `cancelled` require an explicit `from`/`to` window of at most
+  31 days.
+- `1 <= p_limit <= 100`; `p_offset >= 0`.
+- Oldest-first: `created_at asc, id asc`.
+- Returns:
+
+```json
+{
+  "branchId": "uuid",
+  "stationId": "uuid|null",
+  "statuses": ["pending", "preparing", "ready"],
+  "from": "timestamp|null",
+  "to": "timestamp|null",
+  "tickets": [
+    {
+      "ticketId": "uuid",
+      "organizationId": "uuid",
+      "branchId": "uuid",
+      "stationId": "uuid",
+      "stationName": "Hot line",
+      "generation": 1,
+      "status": "preparing",
+      "startedAt": "timestamp|null",
+      "readyAt": "timestamp|null",
+      "completedAt": "timestamp|null",
+      "cancelledAt": "timestamp|null",
+      "cancelledByActorType": "staff",
+      "cancelledByStaffId": "uuid|null",
+      "cancellationReason": "string|null",
+      "createdAt": "timestamp",
+      "updatedAt": "timestamp",
+      "order": {
+        "orderId": "uuid",
+        "orderReference": "ORD-1234",
+        "status": "accepted",
+        "source": "staff",
+        "acceptedAt": "timestamp|null",
+        "notes": "string|null",
+        "tableId": "uuid|null",
+        "tableLabel": "T12"
+      },
+      "items": [
+        {
+          "ticketItemId": "uuid",
+          "ticketId": "uuid",
+          "orderItemId": "uuid",
+          "menuItemId": "uuid",
+          "name": "Nasi Goreng",
+          "quantity": 2,
+          "notes": "No onion",
+          "status": "preparing",
+          "startedAt": "timestamp|null",
+          "readyAt": "timestamp|null",
+          "completedAt": "timestamp|null",
+          "cancelledAt": "timestamp|null",
+          "cancelledByActorType": "staff",
+          "cancelledByStaffId": "uuid|null",
+          "cancellationReason": "string|null",
+          "createdAt": "timestamp",
+          "updatedAt": "timestamp",
+          "modifiers": [
+            {
+              "modifierGroupId": "uuid",
+              "modifierOptionId": "uuid",
+              "groupName": "Spice level",
+              "optionName": "Extra hot"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "pageSize": 50,
+  "hasMore": false,
+  "nextOffset": null
+}
+```
+
+The response contains no prices, subtotals, discounts, totals, currency, or
+payment data. `restaurant_tables.label` is the table identifier. Orders without
+an available table/session return null table fields rather than failing.
+
+**`public.get_kitchen_ticket(p_ticket_id uuid)`** returns the same ticket object.
+Cross-organization access returns `KITCHEN_TICKET_NOT_FOUND` without revealing
+existence.
+
+**Station management RPCs**
+
+| RPC | Purpose |
+| --- | --- |
+| `public.list_kitchen_stations(p_branch_id uuid)` | List stations and routes. Owner/Admin/Manager/Kitchen Staff read. |
+| `public.create_kitchen_station(p_branch_id, p_name, p_description?)` | Create a station. |
+| `public.update_kitchen_station(p_station_id, p_name, p_description?)` | Rename/update description. |
+| `public.deactivate_kitchen_station(p_station_id, p_reason?)` | Set inactive and `deactivated_at`. |
+| `public.reactivate_kitchen_station(p_station_id)` | Set active and clear `deactivated_at`. |
+| `public.add_kitchen_station_category_route(p_station_id, p_menu_category_id)` | Add a category route. |
+| `public.remove_kitchen_station_category_route(p_station_id, p_menu_category_id)` | Remove a category route. |
+| `public.add_kitchen_station_item_route(p_station_id, p_menu_item_id)` | Add an item route. |
+| `public.remove_kitchen_station_item_route(p_station_id, p_menu_item_id)` | Remove an item route. |
+
+All mutations require Owner/Admin/Manager in the station branch. Kitchen Staff
+may read configuration but cannot mutate it. Cashier and anonymous clients are
+denied. Duplicate station names and duplicate routes return
+`RESOURCE_CONFLICT`; adding a route to an inactive station returns
+`KITCHEN_STATION_INACTIVE`; cross-organization station references return
+`KITCHEN_STATION_NOT_FOUND`; cross-organization menu references return
+`MENU_ITEM_NOT_FOUND`.
+
+Station mutations return the complete station object with `categoryRoutes` and
+`itemRoutes`. Deactivation never cancels existing tickets; existing tickets
+remain readable and completable, and reactivation restores the routes.
+
+**Kitchen error codes**
+
+`KITCHEN_TICKET_NOT_FOUND`, `KITCHEN_TICKET_ITEM_NOT_FOUND`,
+`KITCHEN_INVALID_TRANSITION`, `KITCHEN_TICKET_CANCELLED`,
+`KITCHEN_TICKET_INCONSISTENT`, `KITCHEN_CANCELLATION_INVALID`,
+`KITCHEN_STATION_NOT_FOUND`, and `KITCHEN_STATION_INACTIVE` are part of the
+shared `API_ERROR_CODES` union.
+
+**Realtime**
+
+Kitchen Realtime contract, channel naming, filters, event semantics, and
+recovery behavior are documented in
+[`realtime-architecture.md`](./realtime-architecture.md). Publication and
+contract are implemented; branch-isolation delivery tests are blocked by the
+unavailable local stack, so `BLK-008` remains open and polling is supported.
+
+**Order versus kitchen ownership**
+
+POS owns the order lifecycle. Kitchen Staff own kitchen ticket/item preparation.
+Kitchen Staff cannot call `transition_order_status` for order-level `preparing`
+or `ready`; Owner/Admin/Manager retain those transitions. Kitchen item
+completion never marks an order served, completed, or paid.
 
 ### 8.6 POS — Billing and Payments
 

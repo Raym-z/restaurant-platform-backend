@@ -449,3 +449,31 @@ adds:
 is tracked separately and is not overwritten by the M3 cascade. See
 [`../m4-kitchen-infrastructure.md`](../m4-kitchen-infrastructure.md) and
 [`../m4-kitchen-ticket-lifecycle.md`](../m4-kitchen-ticket-lifecycle.md).
+
+## 17. M4.3 kitchen APIs, station management, and Realtime
+
+M4.3 adds no kitchen tables or columns. It adds database functions, grants,
+publication membership, and one narrow order-role restriction:
+
+- `20261110120000_m4_kitchen_station_management.sql` adds station and routing
+  management RPCs (`create/update/deactivate/reactivate`,
+  add/remove category and item routes, `list_kitchen_stations`) plus audit.
+- `20261110130000_m4_kitchen_kds_read_rpcs.sql` adds
+  `list_kitchen_tickets` and `get_kitchen_ticket`, backed by an operational
+  ticket JSON helper. The JSON includes station name, order context, table
+  label, item notes, modifier snapshots, and timestamps; it excludes financial
+  fields.
+- `20261110140000_m4_realtime_kitchen_publication.sql` adds
+  `kitchen_tickets`, `kitchen_ticket_items`, `kitchen_stations`,
+  `kitchen_station_menu_items`, and `kitchen_station_menu_categories` to the
+  `supabase_realtime` publication. Route tables use `replica identity full` for
+  `DELETE` delivery; other kitchen tables keep the default identity.
+- `20261110150000_m4_order_kitchen_state_policy.sql` restricts order-level
+  `preparing`/`ready` transitions to Owner/Admin/Manager. Kitchen Staff use the
+  kitchen ticket-item RPCs and cannot move the order lifecycle.
+
+Authorization remains branch-scoped. Owner/Admin/Manager may configure stations;
+Kitchen Staff may read configuration and operate tickets; Cashier and anonymous
+clients are denied. Existing RLS policies and `SELECT`-only grants are unchanged.
+Realtime uses the same RLS policies and is implemented but not verified in this
+environment; `BLK-008` remains open.

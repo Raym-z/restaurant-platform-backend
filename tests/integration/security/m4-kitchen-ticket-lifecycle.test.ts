@@ -444,6 +444,23 @@ const createKitchenStaff = async (
   return { client, ...staff };
 };
 
+const createManager = async (
+  admin: pg.Client,
+  fixture: Fixture,
+  branchIds: string[],
+): Promise<{ client: pg.Client; staffId: string; authUserId: string }> => {
+  const staff = await addStaff(admin, {
+    organizationId: fixture.organizationId,
+    role: "manager",
+    scope: "branch",
+    branchIds,
+  });
+  const client = await createClient();
+  track(client);
+  await authenticateAs(client, staff.authUserId);
+  return { client, ...staff };
+};
+
 describe("M4.2 ticket generation", () => {
   it("creates one ticket and one item for a single routed item on acceptance", async () => {
     const admin = await createClient();
@@ -1427,6 +1444,7 @@ describe("M4.2 order lifecycle compatibility and guards", () => {
     const sessionId = await createSessionForBranch(admin, fixture, branchId);
     const cashier = await createCashier(admin, fixture, branchId);
     const kitchen = await createKitchenStaff(admin, fixture, [branchId]);
+    const manager = await createManager(admin, fixture, [branchId]);
 
     const order = await createOrder(cashier.client, sessionId, [
       { menuItemId: menu.itemId, quantity: 1 },
@@ -1436,10 +1454,18 @@ describe("M4.2 order lifecycle compatibility and guards", () => {
     expect((await transition(cashier.client, orderId, "accepted")).status).toBe(
       "accepted",
     );
-    expect((await transition(kitchen.client, orderId, "preparing")).status).toBe(
+    await expectPgError(
+      transition(kitchen.client, orderId, "preparing"),
+      "PERMISSION_DENIED",
+    );
+    await expectPgError(
+      transition(kitchen.client, orderId, "ready"),
+      "PERMISSION_DENIED",
+    );
+    expect((await transition(manager.client, orderId, "preparing")).status).toBe(
       "preparing",
     );
-    expect((await transition(kitchen.client, orderId, "ready")).status).toBe(
+    expect((await transition(manager.client, orderId, "ready")).status).toBe(
       "ready",
     );
     expect((await transition(cashier.client, orderId, "served")).status).toBe(
@@ -1474,6 +1500,7 @@ describe("M4.2 order lifecycle compatibility and guards", () => {
     const sessionId = await createSessionForBranch(admin, fixture, branchId);
     const cashier = await createCashier(admin, fixture, branchId);
     const kitchen = await createKitchenStaff(admin, fixture, [branchId]);
+    const manager = await createManager(admin, fixture, [branchId]);
 
     const order = await createOrder(cashier.client, sessionId, [
       { menuItemId: menu.itemId, quantity: 1 },
@@ -1492,8 +1519,17 @@ describe("M4.2 order lifecycle compatibility and guards", () => {
     );
     expect(orderAfterKitchen.rows[0]!.status).toBe("accepted");
 
-    await transition(kitchen.client, orderId, "preparing");
-    await transition(kitchen.client, orderId, "ready");
+    await expectPgError(
+      transition(kitchen.client, orderId, "preparing"),
+      "PERMISSION_DENIED",
+    );
+    await expectPgError(
+      transition(kitchen.client, orderId, "ready"),
+      "PERMISSION_DENIED",
+    );
+
+    await transition(manager.client, orderId, "preparing");
+    await transition(manager.client, orderId, "ready");
     await transition(cashier.client, orderId, "served");
     await transition(cashier.client, orderId, "completed");
 
@@ -2346,6 +2382,7 @@ describe("M4.2 final order-status removal policy", () => {
     const sessionId = await createSessionForBranch(admin, fixture, branchId);
     const cashier = await createCashier(admin, fixture, branchId);
     const kitchen = await createKitchenStaff(admin, fixture, [branchId]);
+    const manager = await createManager(admin, fixture, [branchId]);
     const order = await createOrder(cashier.client, sessionId, [
       { menuItemId: menu.itemId, quantity: 1 },
     ]);
@@ -2361,15 +2398,16 @@ describe("M4.2 final order-status removal policy", () => {
       station,
       cashier,
       kitchen,
+      manager,
       orderId,
       orderItemId,
     };
   };
 
   it("allows removal when the order is preparing and the kitchen item is still pending", async () => {
-    const { admin, cashier, kitchen, orderId, orderItemId } =
+    const { admin, cashier, manager, orderId, orderItemId } =
       await setupRemovalOrder();
-    await transition(kitchen.client, orderId, "preparing");
+    await transition(manager.client, orderId, "preparing");
 
     await removeOrderItem(cashier.client, orderItemId, "Remove pending item");
 
@@ -2386,9 +2424,9 @@ describe("M4.2 final order-status removal policy", () => {
   });
 
   it("allows removal when the order is preparing and the kitchen item is preparing", async () => {
-    const { admin, cashier, kitchen, menu, orderId, orderItemId } =
+    const { admin, cashier, kitchen, manager, menu, orderId, orderItemId } =
       await setupRemovalOrder();
-    await transition(kitchen.client, orderId, "preparing");
+    await transition(manager.client, orderId, "preparing");
     const item = await ticketItemForMenuItem(admin, orderId, menu.itemId);
     await startItem(kitchen.client, item.id);
 
@@ -2406,10 +2444,10 @@ describe("M4.2 final order-status removal policy", () => {
   });
 
   it("allows removal when the order and kitchen item are ready", async () => {
-    const { admin, cashier, kitchen, menu, orderId, orderItemId } =
+    const { admin, cashier, kitchen, manager, menu, orderId, orderItemId } =
       await setupRemovalOrder();
-    await transition(kitchen.client, orderId, "preparing");
-    await transition(kitchen.client, orderId, "ready");
+    await transition(manager.client, orderId, "preparing");
+    await transition(manager.client, orderId, "ready");
     const item = await ticketItemForMenuItem(admin, orderId, menu.itemId);
     await startItem(kitchen.client, item.id);
     await readyItem(kitchen.client, item.id);
@@ -2428,9 +2466,9 @@ describe("M4.2 final order-status removal policy", () => {
   });
 
   it("rejects removal when the matching kitchen item is completed", async () => {
-    const { admin, cashier, kitchen, menu, orderId, orderItemId } =
+    const { admin, cashier, kitchen, manager, menu, orderId, orderItemId } =
       await setupRemovalOrder();
-    await transition(kitchen.client, orderId, "preparing");
+    await transition(manager.client, orderId, "preparing");
     const item = await ticketItemForMenuItem(admin, orderId, menu.itemId);
     await startItem(kitchen.client, item.id);
     await readyItem(kitchen.client, item.id);
@@ -2521,10 +2559,10 @@ describe("M4.2 final order-status removal policy", () => {
   });
 
   it("rejects removal from a terminal served order", async () => {
-    const { admin, cashier, kitchen, orderId, orderItemId } =
+    const { admin, cashier, manager, orderId, orderItemId } =
       await setupRemovalOrder();
-    await transition(kitchen.client, orderId, "preparing");
-    await transition(kitchen.client, orderId, "ready");
+    await transition(manager.client, orderId, "preparing");
+    await transition(manager.client, orderId, "ready");
     await transition(cashier.client, orderId, "served");
 
     await expectPgError(

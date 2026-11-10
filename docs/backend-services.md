@@ -41,6 +41,10 @@ Service migrations follow the Agent 1 baseline and are additive:
 | `20261109160000_m4_kitchen_ticket_lifecycle.sql`                        | M4.2: ticket generation, independent item lifecycle, aggregation, cancellation propagation, audit, and KDS transition RPCs             |
 | `20261109170000_m4_kitchen_ticket_lifecycle_corrections.sql`            | M4.2 corrections: generation identity, exact aggregate guards, staff/system cancellation actors, completed-item protection, routing diagnostics |
 | `20261109180000_m4_kitchen_ticket_lifecycle_final_corrections.sql`      | M4.2 final corrections: preparing/ready item removal, direct item aggregate trigger, cancelled-ticket insertion guard, attribution immutability |
+| `20261110120000_m4_kitchen_station_management.sql`                      | M4.3: station and routing management RPCs, authorization, and audit                                                                     |
+| `20261110130000_m4_kitchen_kds_read_rpcs.sql`                           | M4.3: bounded KDS ticket list/detail RPCs with order, table, item, and modifier context; no financial fields                            |
+| `20261110140000_m4_realtime_kitchen_publication.sql`                    | M4.3: kitchen Realtime publication and route-table replica identity; delivery verification remains blocked (`BLK-008`)                  |
+| `20261110150000_m4_order_kitchen_state_policy.sql`                      | M4.3: order-level preparing/ready restricted to Owner/Admin/Manager; Kitchen Staff use kitchen RPCs                                     |
 
 Agent 1 migrations are never edited.
 
@@ -461,13 +465,13 @@ hashes.
 | Blocker   | Not implemented                                                                                  |
 | --------- | ------------------------------------------------------------------------------------------------ |
 | `BLK-001` | Tax/service/discount/rounding arithmetic; `preview_bill`, `finalize_bill`, payment recording     |
-| `BLK-002` | Item-level preparation transitions, cancellation billing effects, KDS notification behavior       |
+| `BLK-002` | Cancellation billing effects and guest-facing KDS notifications                           |
 | `BLK-003` | Guest token expiry duration, rotation, cleanup schedule (TTL is caller/env supplied; no default) |
 | `BLK-004` | Waitlist restriction details, notification timing, no-show thresholds, manual reorder            |
 | `BLK-005` | Granular role-to-permission mappings; `role_permissions` remains empty                           |
 | `BLK-006` | Bill reopen/void/replacement workflow                                                            |
 | `BLK-007` | Payment void/correction/refund/reconciliation                                                    |
-| `BLK-008` | Realtime channel names, publication payloads, subscription filtering                             |
+| `BLK-008` | Realtime branch-isolation and delivery verification (publication contract implemented)            |
 
 Additional schema-level blockers:
 
@@ -482,4 +486,6 @@ Additional schema-level blockers:
 - Per-branch order display numbering is not implemented. M3 adds a stable,
   non-sequential `order_reference` for operational correlation.
 - Public menu access path is unresolved; no anonymous table grants exist.
-- Realtime publication is not configured; `BLK-008`.
+- Realtime publication is configured for the five kitchen tables in M4.3, but
+  branch-isolation and delivery tests could not run without Docker/WSL. `BLK-008`
+  remains open and polling is the supported fallback.

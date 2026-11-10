@@ -375,9 +375,23 @@ M4.2 final corrections add these KDS invariants:
   immutable. Staff/system constraints remain in force for first-time
   cancellation.
 
+M4.3 adds no new tables or columns. It adds:
+
+- Bounded KDS read RPCs that combine ticket, station, order, dining-session,
+  table, order-item, and modifier snapshots into one operational response. The
+  response excludes all financial fields.
+- Station and routing management RPCs. Station names remain unique per branch;
+  deactivation keeps routes and existing tickets; reactivation restores routing.
+- A kitchen Realtime publication for tickets, ticket items, stations, and route
+  tables. Route tables use full replica identity for `DELETE` delivery.
+- An explicit ownership policy: POS controls the order lifecycle and Kitchen
+  Staff control kitchen ticket/item preparation. Kitchen Staff cannot move the
+  order lifecycle to `preparing` or `ready`.
+
 See
-[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md) and
-[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
+[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md),
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md), and
+[`realtime-architecture.md`](./realtime-architecture.md).
 
 ### 11.7 Bill Finalization and Subsequent Orders
 
@@ -403,7 +417,7 @@ The conceptual model and the detailed rules in this document have been approved.
 3. Exact menu/category branch availability behavior and modifier pricing/selection constraints.
 4. Exact table and dining-session state transitions, session expiry behavior, and concurrent session-creation implementation.
 5. Guest token expiry, rotation, device limits, revocation, and cleanup schedule.
-6. Exact order and order-item status transition matrix, cancellation authorization, cancellation effects on bills, and KDS notification behavior.
+6. Cancellation effects on bills and guest-facing kitchen notification behavior. Order/item transitions and KDS read/station APIs are implemented.
 7. Bill calculation details: tax inclusivity, calculation base, tax/service-charge ordering, discount scope and stacking, calculation sequence, and the single rounding policy.
 8. Finalized-bill reopening/voiding authorization, status transitions, replacement linkage, and audit requirements.
 9. Payment idempotency, cash reconciliation, and audited correction/void/refund workflows.

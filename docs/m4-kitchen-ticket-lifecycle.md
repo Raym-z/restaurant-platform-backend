@@ -1,11 +1,17 @@
-# M4.2 — Order Integration and Kitchen Ticket Lifecycle
+# M4.2/M4.3 — Order Integration and Kitchen Ticket Lifecycle
 
 M4.2 connects the M4.1 kitchen storage to the M3 staff order workflow. It adds
 atomic ticket generation on order acceptance, independent ticket-item
 preparation state, ticket aggregation, cancellation propagation, audit records,
 and secure transition RPCs.
 
-It does **not** add realtime subscriptions, a KDS frontend, station management
+M4.3 adds the application-facing KDS read model, station/routing management
+RPCs, the kitchen Realtime publication, and the order-versus-kitchen state
+ownership policy. It does **not** add a KDS frontend, ticket priority,
+acknowledgement state, recall/reopen, station transfer, kitchen-side item
+cancellation, or station-level staff assignment.
+
+It does **not** add realtime subscriptions in the frontend, station management
 UI, station-specific staff assignments, guest-ordering integration, or
 hosted-database changes.
 
@@ -267,6 +273,9 @@ owner, admin, manager, kitchen_staff
   leaking record existence.
 - Kitchen Staff do not gain access to cashier-only order transitions,
   administrative tables, or subscriptions.
+- M4.3 also denies Kitchen Staff the order-level `preparing`/`ready`
+  transitions. Kitchen Staff use the ticket-item RPCs instead; Owner/Admin/
+  Manager retain the order transitions.
 - Authenticated clients still have `SELECT` only on kitchen tables. Direct
   `INSERT`, `UPDATE`, and `DELETE` on kitchen tables are denied; all transitions
   go through the RPCs below.
@@ -327,6 +336,10 @@ the persisted row. Cancellation events also record the cancellation reason.
   overwrite `kitchen_ticket_items.status`.
 - M3 terminal-state guards, order/item timestamps, cancellation requirements,
   and role authorization remain unchanged.
+- M4.3 narrows only the order-level `preparing`/`ready` role array:
+  Owner/Admin/Manager retain the transitions; Kitchen Staff are denied and must
+  use the kitchen ticket-item RPCs. Other order transitions and roles are
+  unchanged.
 - An order with no routed kitchen items can still be accepted, prepared, served,
   and completed through the existing M3 lifecycle.
 
@@ -356,5 +369,103 @@ the persisted row. Cancellation events also record the cancellation reason.
   system-initiated cancellation through privileged order-item or kitchen write
   paths, but there is no client-callable system cancellation RPC.
 - Station-specific staff assignment and station-level ticket filtering remain
-  deferred.
-- Realtime publication and the KDS frontend remain deferred.
+  deferred. Kitchen Staff have branch-wide access.
+- Realtime publication and the channel contract are implemented, but delivery
+  and branch-isolation tests are blocked until a local Supabase/Docker stack is
+  available. `BLK-008` remains open and polling is the supported fallback.
+- Completed/cancelled history requires an explicit status request and a bounded
+  `from`/`to` window of at most 31 days.
+- Kitchen ticket history becomes unreadable after a branch is deactivated
+  because kitchen RLS/RPC authorization requires an active branch. This is an
+  acknowledged limitation, not a new retention policy.
+- The KDS frontend is not part of this repository.
+
+## 12. M4.3 — KDS read API and ownership policy
+
+### 12.1 Read RPCs
+
+| RPC | Purpose | Authorization |
+| --- | --- | --- |
+| `public.list_kitchen_tickets(p_branch_id, p_station_id, p_statuses, p_limit, p_offset, p_from, p_to)` | Bounded branch/station board, oldest first. | Owner/Admin/Manager/Kitchen Staff in the branch; Cashier denied. |
+| `public.get_kitchen_ticket(p_ticket_id)` | One complete ticket view. | Same branch rule; cross-organization returns `KITCHEN_TICKET_NOT_FOUND`. |
+| `public.list_kitchen_stations(p_branch_id)` | Stations and routing configuration. | Owner/Admin/Manager/Kitchen Staff read; Cashier denied. |
+
+`list_kitchen_tickets` defaults to `pending`, `preparing`, and `ready`, orders by
+`created_at asc, id asc`, enforces `1 <= limit <= 100`, and returns
+`pageSize`, `hasMore`, and `nextOffset`. Completed and cancelled statuses require
+an explicit `from`/`to` window no longer than 31 days. An empty status array,
+negative offset, reversed window, or oversized history window returns
+`VALIDATION_ERROR`.
+
+Each ticket response contains:
+
+- ticket identity, `generation`, aggregate status, and lifecycle timestamps;
+- station ID and station name;
+- order ID, reference, status, source, accepted timestamp, and notes;
+- table ID and `restaurant_tables.label` (nullable when unavailable);
+- ticket items with order-item/menu-item identity, name, quantity, notes,
+  kitchen status, timestamps, cancellation attribution, and modifier snapshots;
+- `createdAt`/`updatedAt` on tickets and items for reconciliation.
+
+The response contains **no** item prices, subtotals, discounts, order totals,
+currency, or payment data. The KDS is an operational surface only.
+
+The transition RPCs keep returning the M4.2 ticket JSON shape. A KDS that wants
+the full board shape should call `get_kitchen_ticket` after a transition. This
+avoids changing the M4.2 contract.
+
+### 12.2 Station and routing management
+
+Owner/Admin/Manager in the station branch can call:
+
+```sql
+public.create_kitchen_station(p_branch_id uuid, p_name text, p_description text default null)
+public.update_kitchen_station(p_station_id uuid, p_name text, p_description text default null)
+public.deactivate_kitchen_station(p_station_id uuid, p_reason text default null)
+public.reactivate_kitchen_station(p_station_id uuid)
+public.add_kitchen_station_category_route(p_station_id uuid, p_menu_category_id uuid)
+public.remove_kitchen_station_category_route(p_station_id uuid, p_menu_category_id uuid)
+public.add_kitchen_station_item_route(p_station_id uuid, p_menu_item_id uuid)
+public.remove_kitchen_station_item_route(p_station_id uuid, p_menu_item_id uuid)
+```
+
+Behavior:
+
+- Station names are unique per branch using the existing case-insensitive,
+  trimmed comparison. Duplicates return `RESOURCE_CONFLICT`.
+- Duplicate category/item routes return `RESOURCE_CONFLICT`. Removing a missing
+  route also returns `RESOURCE_CONFLICT`.
+- A route cannot be added to an inactive station (`KITCHEN_STATION_INACTIVE`).
+  Existing routes can still be removed while the station is inactive.
+- Cross-organization or missing station references return
+  `KITCHEN_STATION_NOT_FOUND`; cross-organization menu references return
+  `MENU_ITEM_NOT_FOUND`.
+- Deactivation sets `status = 'inactive'` and `deactivated_at`; reactivation
+  clears it. Both are idempotent no-ops when the station is already in the target
+  state.
+- Deactivation does not cancel existing tickets. Existing tickets remain
+  readable and completable, and reactivation restores the existing routes.
+- Every write is audited with `private.audit_write` under
+  `kitchen.station_*` or `kitchen.*_route_*` actions.
+- There is no station delete RPC. Stations with tickets are retained.
+
+### 12.3 Order versus kitchen state ownership
+
+- POS/order operations own the order lifecycle.
+- Kitchen Staff own kitchen ticket and ticket-item preparation.
+- Kitchen item completion does **not** mark an order served, completed, or paid.
+- Kitchen ticket transitions do not mutate `orders` or `order_items`.
+- Order transitions cascade `order_items.status` only; they do not mutate
+  `kitchen_tickets` or `kitchen_ticket_items`.
+- Kitchen Staff cannot use `transition_order_status` for order-level
+  `preparing` or `ready`. Owner/Admin/Manager retain those transitions. All other
+  roles and targets are unchanged.
+- Starting the first kitchen item is the v1 acknowledgement signal. There is no
+  explicit ticket acknowledgement state.
+
+### 12.4 Realtime
+
+The kitchen publication, branch channel, filters, and recovery behavior are
+defined in [`realtime-architecture.md`](./realtime-architecture.md). Ticket and
+ticket-item events are both required. Delivery and branch isolation remain
+unverified in this environment; `BLK-008` stays open and polling is supported.

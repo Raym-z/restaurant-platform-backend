@@ -1317,8 +1317,17 @@ describe("M3 order item modification and lifecycle", () => {
       openSession(kitchen, kitchenTable.tableId),
       "PERMISSION_DENIED",
     );
-    await transition(kitchen, orderId, "preparing");
-    await transition(kitchen, orderId, "ready");
+    await expectPgError(
+      transition(kitchen, orderId, "preparing"),
+      "PERMISSION_DENIED",
+    );
+    await expectPgError(
+      transition(kitchen, orderId, "ready"),
+      "PERMISSION_DENIED",
+    );
+    await authenticateAs(manager, managerFixture.authUserId);
+    await transition(manager, orderId, "preparing");
+    await transition(manager, orderId, "ready");
     await authenticateAs(cashier, cashierFixture.authUserId);
     await transition(cashier, orderId, "served");
     const completed = await transition(cashier, orderId, "completed");
