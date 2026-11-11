@@ -596,15 +596,40 @@ A restricted organization cannot create or modify branches.
 | -------------------- | ------------------- | ------------------------------------------------------------------------------- |
 | View staff list      | Direct query        | Enforce organization and branch visibility                                      |
 | View staff profile   | Direct query        | Validate staff visibility                                                       |
-| Invite staff         | Edge Function + RPC | Trusted invitation workflow and database membership creation                    |
-| Create staff account | Edge Function + RPC | Coordinate Auth identity and organization membership                            |
+| Invite staff         | Edge Function + RPC | `staff-invite` creates the Auth invite/magic link and calls invitation RPCs |
+| Create staff account | Edge Function + RPC | Auth identity creation and organization membership coordinated server-side   |
 | Update staff profile | RPC                 | Validate permissions and update allowed fields                                  |
 | Assign roles         | RPC                 | Validate assignable roles, explicit scope/branch, and actor permissions       |
 | Assign branches      | RPC                 | Validate organization membership and branch scope; does not grant a role       |
 | Deactivate staff     | RPC                 | Revoke or restrict organization access without destroying historical references |
 | Reactivate staff     | RPC                 | Restore access after permission and account checks                              |
 
-Staff invitations may use Supabase Auth invitation functionality through a trusted server-side workflow.
+Staff invitations are implemented in M4.7.2. The `staff-invite` Edge Function uses
+Supabase Auth invitations for new accounts and a magic link for addresses that
+already have an Auth account. The caller receives the same response in both
+cases, so account existence is not disclosed. The database stores organization,
+branch scope, role, normalized email, inviter, expiry, and a SHA-256 token hash.
+
+Invitation lifecycle:
+
+1. `pending` — created by an Owner/Admin and delivered by the Edge Function.
+2. `accepted` — single-use acceptance created the staff profile and role.
+3. `revoked` — an authorized administrator cancelled the invitation.
+4. `expired` — `expires_at` passed; RPCs evaluate this lazily and the next
+   replacement invitation marks the stale row expired.
+
+Resending rotates the token, so the previous link stops working. Replays return
+`INVITATION_ALREADY_ACCEPTED`. Cross-organization membership is blocked by the
+existing unique `staff_profiles.auth_user_id` constraint and the acceptance RPC's
+`STAFF_ALREADY_MEMBER` check.
+
+Operational endpoints:
+
+- `create_staff_invitation(...)` — Owner/Admin; Admin may not invite Admin.
+- `list_staff_invitations(limit)` — Owner/Admin; never returns token material.
+- `revoke_staff_invitation(id, reason)` — pending/expired only.
+- `rotate_staff_invitation_token(id, token_hash_hex, expires_at)` — resend.
+- `accept_staff_invitation(token_hash_hex)` — authenticated invitee, email-bound.
 
 Never allow a frontend to assign itself Owner, Admin, or Platform Admin privileges.
 

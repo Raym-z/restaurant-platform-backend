@@ -68,6 +68,23 @@ Associates staff with the branches they may access and remains a required gate f
 - A branch assignment by itself grants no role and no branch visibility.
 - Revoking a branch assignment suspends access while the role row remains active; re-assigning the branch restores that role. Permanent removal requires revoking the role assignment.
 
+### Staff Invitation
+
+A staff invitation is an organization-scoped, single-use record that proposes a
+staff membership before an Auth account is attached to the organization.
+
+- Fields: organization, optional branch, normalized email, display name, role,
+  explicit scope, inviter, expiry, delivery count, and status.
+- Only a SHA-256 hash of the acceptance token is stored.
+- Status is `pending`, `accepted`, `revoked`, or `expired`.
+- Acceptance requires an authenticated account whose verified email matches the
+  invitation and creates the staff profile and role assignment atomically.
+- Admin invitations may only be created by the Owner; an Admin may invite
+  Manager, Cashier, or Kitchen Staff.
+- At most one pending invitation exists per organization and email.
+- Accepted and revoked invitations are retained for audit and are not deleted.
+- The existing one-organization-per-staff-account rule is unchanged.
+
 ### Platform Admin Identity
 
 Platform Admin is a platform-level authorization role, separate from the five organization roles. Platform Admin accounts are provisioned by an authorized Platform Admin through a controlled process; there is no public signup or self-promotion path. Initial provisioning occurs securely outside public registration.

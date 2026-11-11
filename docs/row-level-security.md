@@ -92,3 +92,16 @@ Test SELECT, INSERT, UPDATE, and DELETE separately where supported. Also test RP
 ## 11. Policy maintenance
 
 Keep policies in version-controlled migrations. Document policy intent and test coverage. When a table is added, its RLS status and policy design must be part of the same reviewed change.
+
+## Staff invitations
+
+`public.staff_invitations` contains single-use invitation metadata and a SHA-256
+token hash. RLS is enabled, and `anon`/`authenticated` have **no table grants**.
+All reads and writes go through `SECURITY DEFINER` RPCs that require an active
+organization-scoped Owner/Admin, except acceptance, which requires the invited
+authenticated account.
+
+The table is not exposed to Realtime. Token hashes are never returned by list or
+create RPCs, and raw tokens never enter the database, audit payloads, or logs.
+Cross-organization access is denied by the RPC organization checks; cross-org
+invitation IDs are reported as not found.

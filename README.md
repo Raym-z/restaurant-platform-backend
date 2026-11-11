@@ -72,6 +72,7 @@ The initial release supports **cash payments only**. The system records the amou
 | `docs/implementation-roadmap.md` | Recommended implementation sequence. |
 | `docs/backend-services.md` | RLS, authorization helpers, RPCs, Edge Functions, and service blockers. |
 | `docs/m3-core-pos-operations.md` | M3 tables, dining sessions, orders, state machine, and RPC contracts. |
+| `docs/m4-7-2-staff-provisioning-implementation.md` | Staff invitation architecture, migration, tests, and hosted configuration. |
 
 ## Development status
 
