@@ -32,22 +32,24 @@ export const authenticateAs = async (
   client: pg.Client,
   authUserId: string,
   role: AuthRole = "authenticated",
+  claims: Record<string, unknown> = {},
 ): Promise<void> => {
   const now = Math.floor(Date.now() / 1000);
-  const claims = JSON.stringify({
+  const payload = JSON.stringify({
     sub: authUserId,
     role,
     aud: "authenticated",
     iss: "http://127.0.0.1:54321/auth/v1",
     iat: now,
     exp: now + 3600,
+    ...claims,
   });
 
   await client.query(
     `select set_config('request.jwt.claims', $1, false),
             set_config('request.jwt.claim.sub', $2, false),
             set_config('request.jwt.claim.role', $3, false)`,
-    [claims, authUserId, role],
+    [payload, authUserId, role],
   );
   await client.query(`set role ${role}`);
 };
