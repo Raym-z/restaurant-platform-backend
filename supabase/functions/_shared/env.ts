@@ -24,6 +24,26 @@ const required = (name: string): string => {
   return value;
 };
 
+export type StaffInviteEnv = {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  anonKey: string;
+  acceptanceUrl: string;
+  invitationTtlSeconds: number;
+  corsAllowedOrigins: string[];
+};
+
+let cachedStaffInvite: StaffInviteEnv | null = null;
+
+const corsOrigins = (): string[] => {
+  const origins = (Deno.env.get("CORS_ALLOWED_ORIGINS") ?? "*")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  return origins.length > 0 ? origins : ["*"];
+};
+
 export const getEdgeEnv = (): EdgeEnv => {
   if (cached !== null) {
     return cached;
@@ -86,4 +106,58 @@ export const getEdgeEnv = (): EdgeEnv => {
   };
 
   return cached;
+};
+
+/**
+ * Environment for the staff invitation function.
+ *
+ * This intentionally does not require guest-only secrets so the invitation
+ * function can be deployed without enabling guest flows.
+ */
+export const getStaffInviteEnv = (): StaffInviteEnv => {
+  if (cachedStaffInvite !== null) {
+    return cachedStaffInvite;
+  }
+
+  const acceptanceUrl = required("POS_ACCEPT_INVITATION_URL");
+
+  let parsedAcceptanceUrl: URL;
+  try {
+    parsedAcceptanceUrl = new URL(acceptanceUrl);
+  } catch {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "POS_ACCEPT_INVITATION_URL must be an absolute URL",
+    );
+  }
+
+  if (!["http:", "https:"].includes(parsedAcceptanceUrl.protocol)) {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "POS_ACCEPT_INVITATION_URL must use http or https",
+    );
+  }
+
+  const ttlRaw = Deno.env.get("STAFF_INVITATION_TTL_SECONDS") ?? "604800";
+  const ttl = Number.parseInt(ttlRaw, 10);
+
+  if (!Number.isInteger(ttl) || ttl < 300 || ttl > 2_592_000) {
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "STAFF_INVITATION_TTL_SECONDS must be between 300 and 2592000",
+    );
+  }
+
+  cachedStaffInvite = {
+    supabaseUrl: required("SUPABASE_URL"),
+    serviceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
+    anonKey:
+      Deno.env.get("SUPABASE_ANON_KEY")?.trim() ||
+      required("SUPABASE_PUBLISHABLE_KEY"),
+    acceptanceUrl: parsedAcceptanceUrl.toString(),
+    invitationTtlSeconds: ttl,
+    corsAllowedOrigins: corsOrigins(),
+  };
+
+  return cachedStaffInvite;
 };

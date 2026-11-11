@@ -10,11 +10,17 @@ import {
   AppError,
   HTTP_STATUS_BY_ERROR_CODE,
 } from "../../../src/lib/errors.ts";
-import type { EdgeEnv } from "./env.ts";
+
+export type CorsEnv = {
+  corsAllowedOrigins: string[];
+};
 
 export const MAX_BODY_BYTES = 1_000_000;
 
-export const corsHeaders = (request: Request, env: EdgeEnv | null): Headers => {
+export const corsHeaders = (
+  request: Request,
+  env: CorsEnv | null,
+): Headers => {
   const headers = new Headers();
   const origin = request.headers.get("origin");
   const allowed = env?.corsAllowedOrigins ?? ["*"];
@@ -35,7 +41,7 @@ export const corsHeaders = (request: Request, env: EdgeEnv | null): Headers => {
   return headers;
 };
 
-export const optionsResponse = (request: Request, env: EdgeEnv): Response =>
+export const optionsResponse = (request: Request, env: CorsEnv): Response =>
   new Response(null, {
     status: 204,
     headers: corsHeaders(request, env),
@@ -45,7 +51,7 @@ export const jsonResponse = (
   body: unknown,
   status: number,
   request: Request,
-  env: EdgeEnv | null,
+  env: CorsEnv | null,
 ): Response => {
   const headers = corsHeaders(request, env);
   headers.set("Content-Type", "application/json; charset=utf-8");
@@ -98,7 +104,7 @@ export const readJsonBody = async (request: Request): Promise<unknown> => {
 export const successResponse = <T>(
   data: T,
   request: Request,
-  env: EdgeEnv,
+  env: CorsEnv,
   status = 200,
   meta: ApiMeta = null,
 ): Response => jsonResponse(apiSuccess(data, meta), status, request, env);
@@ -106,7 +112,7 @@ export const successResponse = <T>(
 export const errorResponse = (
   error: unknown,
   request: Request,
-  env: EdgeEnv | null,
+  env: CorsEnv | null,
 ): Response => {
   if (error instanceof AppError) {
     const response = jsonResponse(

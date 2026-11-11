@@ -20,6 +20,7 @@ export * from "./contracts/order/rpc.ts";
 export * from "./contracts/order/status.ts";
 export * from "./contracts/platform-admin/rpc.ts";
 export * from "./contracts/session/rpc.ts";
+export * from "./contracts/staff/invitation.ts";
 export * from "./contracts/staff/rpc.ts";
 export * from "./contracts/table/rpc.ts";
 export * from "./contracts/waitlist/rpc.ts";
