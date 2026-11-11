@@ -1,8 +1,9 @@
 import { z } from "zod";
 
-import { UuidSchema } from "../common/ids.js";
-import { CurrencyCodeSchema } from "../common/money.js";
-import { IanaTimezoneSchema, UtcInstantSchema } from "../common/time.js";
+import { UuidSchema } from "../common/ids.ts";
+import { CurrencyCodeSchema } from "../common/money.ts";
+import { IanaTimezoneSchema, UtcInstantSchema } from "../common/time.ts";
+import { OrderItemStatusSchema, OrderStatusSchema } from "../order/status.ts";
 
 /**
  * Raw guest token. This is never persisted; only its SHA-256 hash is stored.
@@ -46,7 +47,7 @@ export type GuestSessionContext = z.infer<typeof GuestSessionContextSchema>;
 
 export const ResolveTableRequestSchema = z
   .object({
-    qrIdentifier: z.string().min(1).max(256),
+    qrIdentifier: UuidSchema,
     deviceLabel: GuestDeviceLabelSchema.optional(),
   })
   .strict();
@@ -85,9 +86,42 @@ export type GuestSessionDataRequest = z.infer<
   typeof GuestSessionDataRequestSchema
 >;
 
+export const GuestSessionResponseSchema = z
+  .object({
+    session: GuestSessionContextSchema,
+  })
+  .strict();
+
+export type GuestSessionResponse = z.infer<typeof GuestSessionResponseSchema>;
+
+export const GuestOrderItemSummarySchema = z
+  .object({
+    orderItemId: UuidSchema,
+    name: z.string().min(1).max(200),
+    quantity: z.number().int().min(1),
+    status: OrderItemStatusSchema,
+    lineTotalMinor: z.number().int(),
+  })
+  .strict();
+
+export type GuestOrderItemSummary = z.infer<typeof GuestOrderItemSummarySchema>;
+
+export const GuestOrderSummarySchema = z
+  .object({
+    orderId: UuidSchema,
+    status: OrderStatusSchema,
+    subtotalMinor: z.number().int(),
+    createdAt: UtcInstantSchema,
+    items: z.array(GuestOrderItemSummarySchema),
+  })
+  .strict();
+
+export type GuestOrderSummary = z.infer<typeof GuestOrderSummarySchema>;
+
 export const GuestSessionDataResponseSchema = z
   .object({
     session: GuestSessionContextSchema,
+    orders: z.array(GuestOrderSummarySchema),
   })
   .strict();
 

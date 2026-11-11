@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ApiErrorPayloadSchema, type ApiErrorPayload } from "./errors.js";
+import { ApiErrorPayloadSchema, type ApiErrorPayload } from "./errors.ts";
 
 /**
  * Free-form response metadata. Pagination metadata is defined separately and

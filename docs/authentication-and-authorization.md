@@ -30,15 +30,18 @@ Staff access is determined by:
 - Branch assignments or explicitly approved organization-wide scope.
 - Resource ownership, tenant consistency, and current resource state.
 
-Initial role templates:
-- Organization Owner.
-- Organization Administrator.
-- Branch Manager.
-- Cashier.
-- Kitchen Staff.
-- Host/Queue Staff.
+Initial roles:
+- Owner (organization-wide).
+- Admin (organization-wide or branch-scoped).
+- Manager (branch-scoped).
+- Cashier (branch-scoped).
+- Kitchen Staff (branch-scoped).
 
-Role names are templates; backend permissions must be granular and explicit. Staff cannot switch organizations. They may switch between branches only when their assignments and permissions allow it.
+Role names are fixed for the initial release; backend permissions must be granular and explicit. Staff cannot switch organizations. They may switch between branches only when their role assignments and branch assignments allow it.
+
+Each role assignment carries its scope explicitly. Branch-scoped assignments include the branch identifier; organization-scoped assignments do not. A staff member may hold different roles at different branches, for example Manager at Branch 1 and Cashier at Branch 2. A role assigned at Branch 1 never grants that role at Branch 2. Branch-scoped authorization requires both the branch-specific role assignment and an active branch assignment for that branch. Revoked assignments, inactive staff, and inactive branches grant no access.
+
+Revoking a branch assignment suspends access; the branch-scoped role row remains active, and re-assigning the same branch restores that role. To remove access permanently, revoke the role assignment as well. Assigning a branch does not itself grant a role; each role must be granted for the branch explicitly. A branch role granted on an inactive branch is inert until the branch is reactivated.
 
 ## 5. Customer authorization
 
@@ -83,7 +86,29 @@ For each protected operation, validate:
 
 ## 8. Role and permission lifecycle
 
-The backend must define how staff invitations, membership activation, role changes, branch assignments, suspension, and removal work. Changes must take effect on subsequent authorized operations. Sensitive changes should be auditable.
+Staff invitations are implemented in M4.7.2:
+
+- An organization-scoped Owner or Admin creates an invitation through the
+  `staff-invite` Edge Function, which calls `create_staff_invitation` as the
+  authenticated actor.
+- Owner may invite Admin, Manager, Cashier, or Kitchen Staff. Admin may invite
+  Manager, Cashier, or Kitchen Staff only.
+- The invitation is bound to one organization, an optional branch, an explicit
+  role/scope, the normalized invitee email, the inviter, and an expiry.
+- Only a SHA-256 hash of the single-use acceptance token is stored.
+- Acceptance requires an authenticated session whose Auth-user email matches the
+  invitation. The RPC revalidates the inviter's current authority, creates the
+  staff profile and role assignment atomically, and marks the invitation accepted.
+- Accepted invitations cannot be revoked. Pending invitations can be revoked.
+  Resending rotates the token and invalidates the previous link.
+- Expiry is evaluated lazily; the next replacement invitation marks a stale
+  pending row expired.
+- The existing one-organization-per-account invariant is preserved:
+  `staff_profiles.auth_user_id` remains unique and acceptance rejects an account
+  that already has a membership.
+
+Changes take effect on subsequent authorized operations. Every invitation
+transition is audited.
 
 The owner role must have a safe ownership-transfer and recovery process; avoid accidental removal of the only authorized owner.
 
@@ -93,10 +118,15 @@ Define and test:
 - Supabase Auth session expiry, refresh, logout, and revocation for registered users.
 - Disabled or removed staff association.
 - Customer account recovery and email verification.
-- Invitation expiry and acceptance.
+- Invitation expiry and acceptance (implemented in M4.7.2; see §8).
 - Behavior after role or branch permission changes.
 - Guest token expiry, revocation, and invalidation on dining-session closure.
 
 ## 10. Pending decisions
 
-Finalize invitation flow, customer registration/verification requirements, role customization, platform-admin access, guest-token expiry/rotation duration, and the exact profile/mapping schema before implementation. The one-organization-per-staff-account rule and universal customer-account rule are settled decisions, not open questions.
+Finalize customer registration/verification requirements, role customization,
+platform-admin access, the commercial Free-plan branch limit, guest-token
+expiry/rotation duration, and the exact profile/mapping schema before
+implementation. The one-organization-per-staff-account rule, the invitation
+lifecycle above, and the universal customer-account rule are settled decisions,
+not open questions.

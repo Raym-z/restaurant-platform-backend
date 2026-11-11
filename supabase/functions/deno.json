@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "zod": "npm:zod@4.6.7",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.119.0"
+  },
+  "compilerOptions": {
+    "strict": true
+  }
+}

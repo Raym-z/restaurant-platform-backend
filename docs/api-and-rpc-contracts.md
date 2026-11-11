@@ -407,6 +407,7 @@ Suggested categories:
 - `GUEST_TOKEN_EXPIRED`
 - `GUEST_SESSION_CLOSED`
 - `GUEST_SESSION_NOT_FOUND`
+- `DINING_SESSION_NOT_FOUND`
 
 ### Orders
 
@@ -415,6 +416,7 @@ Suggested categories:
 - `ORDER_SUBMISSION_FAILED`
 - `ORDER_ALREADY_PROCESSED`
 - `ORDER_ITEM_UNAVAILABLE`
+- `ORDER_ITEM_NOT_FOUND`
 - `ORDER_MODIFICATION_NOT_ALLOWED`
 
 ### Billing and Payments
@@ -494,9 +496,52 @@ Owner has organization-wide authority.
 
 Admin may be organization-wide or branch-assigned according to their configured scope.
 
-Manager, Cashier, and Kitchen Staff are restricted to assigned branches.
+Manager, Cashier, and Kitchen Staff are restricted to the specific branch on each role assignment and also require an active branch assignment for that branch.
+
+A role assignment is either organization-scoped with no branch, or branch-scoped with exactly one branch in the same organization. The same staff member may be Manager at Branch A and Cashier at Branch B. A branch-scoped role never applies at another branch, even when the staff member is assigned to multiple branches.
+
+`grant_staff_role` shape:
+
+```json
+{
+  "staffId": "uuid",
+  "role": "manager",
+  "scope": "branch",
+  "branchId": "uuid",
+  "reason": "Branch manager"
+}
+```
+
+For an organization-scoped Admin, omit `branchId` (or send `null`). The response always states the branch, using `null` for organization scope:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "roleCode": "manager",
+  "scope": "branch",
+  "branchId": "uuid"
+}
+```
 
 The backend must use centralized permission definitions rather than scattered frontend role checks.
+
+Staff role/branch administration normalizes missing and cross-tenant resources to the same error detail for each resource class (`Staff member was not found`, `Branch was not found`, `Role assignment was not found`, or `Branch assignment was not found`) so callers cannot distinguish a missing row from another tenant's row. The same `Staff member was not found` detail applies to `deactivate_staff`, `reactivate_staff`, and `update_staff_profile`.
+
+When a branch-scoped role grant creates the matching branch assignment implicitly, `staff.role_granted` is the authoritative audit event and carries the branch in `branch_id` and metadata. No separate `staff.branch_assigned` event is emitted for the implicit creation.
+
+`revoke_staff_role` responses are typed:
+
+```json
+{
+  "assignmentId": "uuid",
+  "staffId": "uuid",
+  "branchId": "uuid-or-null",
+  "status": "revoked"
+}
+```
+
+`status` is `revoked` or `already_revoked`. Concurrent revocations serialize: exactly one caller receives `revoked`, later callers receive `already_revoked`, and only one audit event is written.
 
 Only the Owner may initiate subscription renewal, upgrades, downgrades, or plan changes.
 
@@ -551,19 +596,46 @@ A restricted organization cannot create or modify branches.
 | -------------------- | ------------------- | ------------------------------------------------------------------------------- |
 | View staff list      | Direct query        | Enforce organization and branch visibility                                      |
 | View staff profile   | Direct query        | Validate staff visibility                                                       |
-| Invite staff         | Edge Function + RPC | Trusted invitation workflow and database membership creation                    |
-| Create staff account | Edge Function + RPC | Coordinate Auth identity and organization membership                            |
+| Invite staff         | Edge Function + RPC | `staff-invite` creates the Auth invite/magic link and calls invitation RPCs |
+| Create staff account | Edge Function + RPC | Auth identity creation and organization membership coordinated server-side   |
 | Update staff profile | RPC                 | Validate permissions and update allowed fields                                  |
-| Assign roles         | RPC                 | Validate assignable roles and actor permissions                                 |
-| Assign branches      | RPC                 | Validate organization membership and branch scope                               |
+| Assign roles         | RPC                 | Validate assignable roles, explicit scope/branch, and actor permissions       |
+| Assign branches      | RPC                 | Validate organization membership and branch scope; does not grant a role       |
 | Deactivate staff     | RPC                 | Revoke or restrict organization access without destroying historical references |
 | Reactivate staff     | RPC                 | Restore access after permission and account checks                              |
 
-Staff invitations may use Supabase Auth invitation functionality through a trusted server-side workflow.
+Staff invitations are implemented in M4.7.2. The `staff-invite` Edge Function uses
+Supabase Auth invitations for new accounts and a magic link for addresses that
+already have an Auth account. The caller receives the same response in both
+cases, so account existence is not disclosed. The database stores organization,
+branch scope, role, normalized email, inviter, expiry, and a SHA-256 token hash.
+
+Invitation lifecycle:
+
+1. `pending` — created by an Owner/Admin and delivered by the Edge Function.
+2. `accepted` — single-use acceptance created the staff profile and role.
+3. `revoked` — an authorized administrator cancelled the invitation.
+4. `expired` — `expires_at` passed; RPCs evaluate this lazily and the next
+   replacement invitation marks the stale row expired.
+
+Resending rotates the token, so the previous link stops working. Replays return
+`INVITATION_ALREADY_ACCEPTED`. Cross-organization membership is blocked by the
+existing unique `staff_profiles.auth_user_id` constraint and the acceptance RPC's
+`STAFF_ALREADY_MEMBER` check.
+
+Operational endpoints:
+
+- `create_staff_invitation(...)` — Owner/Admin; Admin may not invite Admin.
+- `list_staff_invitations(limit)` — Owner/Admin; never returns token material.
+- `revoke_staff_invitation(id, reason)` — pending/expired only.
+- `rotate_staff_invitation_token(id, token_hash_hex, expires_at)` — resend.
+- `accept_staff_invitation(token_hash_hex)` — authenticated invitee, email-bound.
 
 Never allow a frontend to assign itself Owner, Admin, or Platform Admin privileges.
 
 Role and branch assignment changes must be audited.
+
+Assigning a branch role records the requested `branch_id` on the role row and ensures an active branch assignment exists for the same staff member and branch. Branch assignments still grant no permission by themselves; revoking one removes branch access even while a role row remains active. Re-assigning the same branch restores that still-active role, so a branch-assignment revocation is a suspension, not a permanent removal; revoke the role assignment for permanent removal. Assigning a branch on its own does not extend an existing branch-scoped role to that branch; grant the role for the branch explicitly. A role granted on an inactive branch is inert until the branch is reactivated. Different roles may be assigned at different branches for the same staff member.
 
 ### 8.3 POS — Menu Management
 
@@ -616,6 +688,11 @@ A table may have only one active dining session at a time.
 
 Closing the session releases the table for a future session.
 
+M3 implements the staff table/session read and lifecycle RPCs in
+[`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md), including
+availability, active-session reads, idempotent session opening, and guarded
+session closure.
+
 ### 8.5 POS — Orders and KDS
 
 | Operation                      | Mechanism               | Backend responsibility                            |
@@ -626,16 +703,19 @@ Closing the session releases the table for a future session.
 | Reject order                   | RPC                     | Validate permission and transition, record reason |
 | Update item preparation status | RPC                     | Enforce valid item-level transitions              |
 | Mark item served               | RPC                     | Validate preparation state and permissions        |
-| Mark order served              | RPC                     | Validate all non-cancelled items are served       |
+| Mark order served              | RPC                     | Validate at least one non-cancelled item and all such items are served |
 | Cancel order                   | RPC                     | Validate cancellation rules and record reason     |
-| Cancel individual item         | RPC                     | Validate preparation state and permissions        |
+| Cancel individual item         | RPC                     | Validate preparation state and permissions; reject completed kitchen work |
+| View kitchen board             | RPC                     | Return a bounded branch/station ticket board without financial data |
+| Configure kitchen stations     | RPC                     | Owner/Admin/Manager only; audited; preserve existing tickets |
+| View kitchen routing issues    | RPC                     | Report inactive item/category routes in an authorized branch |
 | Correct order                  | RPC                     | Apply explicit audited correction workflow        |
 | Subscribe to order updates     | Realtime                | Deliver authorized order changes                  |
 | Subscribe to KDS updates       | Realtime                | Deliver authorized preparation changes            |
 
 Order lifecycle:
 
-`Pending → Accepted → Preparing → Ready → Served`
+`Pending → Accepted → Preparing → Ready → Served → Completed`
 
 Cancellation is a separate terminal outcome where permitted.
 
@@ -643,13 +723,267 @@ The backend enforces all transitions.
 
 Item preparation statuses are tracked independently.
 
-An order is considered served when all non-cancelled items are served.
+An order is considered served when it has at least one non-cancelled item and all
+non-cancelled items are served.
 
 Payment status is independent of order preparation status.
 
 Orders and items must not be silently overwritten after submission.
 
 Corrections and cancellations require appropriate permissions and audit records.
+
+M3 adds an explicit operational `completed` state after `served` and implements
+the approved transition matrix, staff order creation, item modification before
+preparation, idempotent creation, and audited cancellation. Order transitions
+cascade to non-cancelled items; `served`/`completed` requires at least one
+non-cancelled item and all such items to be served. An order whose last item was
+removed can only be cancelled. Payment settlement remains independent.
+
+M4.2 implements the KDS order integration. Accepting an order atomically
+generates one ticket per `(order, active station)`; item-level routing overrides
+category routing, and unrouted items do not block acceptance. Ticket identity is
+generation-based: one active ticket per `(order, station)`, with cancelled
+tickets retained as historical generations. Independent kitchen ticket-item
+state is moved with:
+
+- `public.start_kitchen_ticket_item(ticket_item_id uuid)` — `pending` to
+  `preparing`.
+- `public.mark_kitchen_ticket_item_ready(ticket_item_id uuid)` — `preparing` to
+  `ready`.
+- `public.complete_kitchen_ticket_item(ticket_item_id uuid)` — `ready` to
+  `completed`.
+
+The item-transition RPCs require an Owner/Admin/Manager/Kitchen Staff branch
+role; Cashier is denied. Each returns the updated ticket JSON, including items,
+generation, aggregate ticket status, and cancellation actor fields. Ticket status
+is derived exactly from item state (`pending`, `preparing`, `ready`, `completed`,
+or `cancelled`) and cancellation never produces `completed`. Details and exact
+aggregation rules are in
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md).
+
+`public.remove_order_item` is the supported item-removal path. It accepts orders
+in `pending`, `accepted`, `preparing`, or `ready`, provided every matching
+kitchen ticket item is `pending`, `preparing`, or `ready`. An unrouted item has
+no matching ticket item and follows the same rule. The order status is not
+changed by removal. Terminal orders (`served`, `completed`, `cancelled`) are
+rejected, and any matching `completed` kitchen item rejects the removal with
+`ORDER_MODIFICATION_NOT_ALLOWED`. Multi-station order items are removed
+atomically or rejected as a whole. The order subtotal is recalculated within the
+same transaction through a narrowly scoped M3 guard exception.
+
+Ticket-item aggregate maintenance is a database invariant. An
+`AFTER INSERT OR UPDATE OF status` trigger recalculates the parent ticket for
+trusted direct item writes and rejects active items under cancelled tickets.
+Authenticated clients still have `SELECT` only; direct kitchen-table writes are
+not a supported application path. Once a ticket or ticket item is cancelled, its
+cancellation actor, timestamp, and reason are immutable.
+
+#### `public.list_kitchen_routing_issues`
+
+Read-only branch routing diagnostics for Owner/Admin/Manager.
+
+- Argument: `p_branch_id uuid`.
+- Authorization: authenticated staff with Owner, Admin, or Manager access to the
+  branch. Cashier and Kitchen Staff are denied.
+- Errors: `BRANCH_NOT_FOUND` when the branch does not belong to the caller's
+  organization; `PERMISSION_DENIED` when the caller lacks the required branch
+  role.
+- Returns: `jsonb`
+
+```json
+{
+  "branchId": "uuid",
+  "issues": [
+    {
+      "issueType": "inactive_item_route",
+      "branchId": "uuid",
+      "menuItemId": "uuid",
+      "menuItemName": "Nasi Goreng",
+      "menuCategoryId": "uuid",
+      "menuCategoryName": "Mains",
+      "stationId": "uuid",
+      "stationName": "Hot line",
+      "stationStatus": "inactive",
+      "categoryRouteActive": true
+    },
+    {
+      "issueType": "inactive_category_route",
+      "branchId": "uuid",
+      "menuCategoryId": "uuid",
+      "menuCategoryName": "Mains",
+      "stationId": "uuid",
+      "stationName": "Cold line",
+      "stationStatus": "inactive"
+    }
+  ]
+}
+```
+
+`inactive_item_route` means the item-level route suppresses category routing; if
+`categoryRouteActive` is true, the otherwise-active category route will not be
+used while the item-level station remains inactive. The RPC returns only the
+requested branch's routing configuration.
+
+Order responses expose `subtotalMinor` (historical item snapshot, retained for
+audit after cancellation) and `payableSubtotalMinor` (zero for cancelled orders).
+Session summaries exclude cancelled orders from their payable total. See
+[`docs/m3-core-pos-operations.md`](./m3-core-pos-operations.md).
+
+#### M4.3 — KDS read and station management
+
+M4.3 provides contract-shaped KDS reads and application-facing configuration.
+
+**`public.list_kitchen_tickets`**
+
+```sql
+public.list_kitchen_tickets(
+  p_branch_id uuid,
+  p_station_id uuid default null,
+  p_statuses public.kitchen_ticket_status[] default null,
+  p_limit integer default 50,
+  p_offset integer default 0,
+  p_from timestamptz default null,
+  p_to timestamptz default null
+) returns jsonb
+```
+
+- Authorization: Owner/Admin/Manager/Kitchen Staff in the branch; Cashier and
+  anonymous clients are denied.
+- Default statuses are `pending`, `preparing`, and `ready`.
+- `completed` and `cancelled` require an explicit `from`/`to` window of at most
+  31 days.
+- `1 <= p_limit <= 100`; `p_offset >= 0`.
+- Oldest-first: `created_at asc, id asc`.
+- Returns:
+
+```json
+{
+  "branchId": "uuid",
+  "stationId": "uuid|null",
+  "statuses": ["pending", "preparing", "ready"],
+  "from": "timestamp|null",
+  "to": "timestamp|null",
+  "tickets": [
+    {
+      "ticketId": "uuid",
+      "organizationId": "uuid",
+      "branchId": "uuid",
+      "stationId": "uuid",
+      "stationName": "Hot line",
+      "generation": 1,
+      "status": "preparing",
+      "startedAt": "timestamp|null",
+      "readyAt": "timestamp|null",
+      "completedAt": "timestamp|null",
+      "cancelledAt": "timestamp|null",
+      "cancelledByActorType": "staff",
+      "cancelledByStaffId": "uuid|null",
+      "cancellationReason": "string|null",
+      "createdAt": "timestamp",
+      "updatedAt": "timestamp",
+      "order": {
+        "orderId": "uuid",
+        "orderReference": "ORD-1234",
+        "status": "accepted",
+        "source": "staff",
+        "acceptedAt": "timestamp|null",
+        "notes": "string|null",
+        "tableId": "uuid|null",
+        "tableLabel": "T12"
+      },
+      "items": [
+        {
+          "ticketItemId": "uuid",
+          "ticketId": "uuid",
+          "orderItemId": "uuid",
+          "menuItemId": "uuid",
+          "name": "Nasi Goreng",
+          "quantity": 2,
+          "notes": "No onion",
+          "status": "preparing",
+          "startedAt": "timestamp|null",
+          "readyAt": "timestamp|null",
+          "completedAt": "timestamp|null",
+          "cancelledAt": "timestamp|null",
+          "cancelledByActorType": "staff",
+          "cancelledByStaffId": "uuid|null",
+          "cancellationReason": "string|null",
+          "createdAt": "timestamp",
+          "updatedAt": "timestamp",
+          "modifiers": [
+            {
+              "modifierGroupId": "uuid",
+              "modifierOptionId": "uuid",
+              "groupName": "Spice level",
+              "optionName": "Extra hot"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "pageSize": 50,
+  "hasMore": false,
+  "nextOffset": null
+}
+```
+
+The response contains no prices, subtotals, discounts, totals, currency, or
+payment data. `restaurant_tables.label` is the table identifier. Orders without
+an available table/session return null table fields rather than failing.
+
+**`public.get_kitchen_ticket(p_ticket_id uuid)`** returns the same ticket object.
+Cross-organization access returns `KITCHEN_TICKET_NOT_FOUND` without revealing
+existence.
+
+**Station management RPCs**
+
+| RPC | Purpose |
+| --- | --- |
+| `public.list_kitchen_stations(p_branch_id uuid)` | List stations and routes. Owner/Admin/Manager/Kitchen Staff read. |
+| `public.create_kitchen_station(p_branch_id, p_name, p_description?)` | Create a station. |
+| `public.update_kitchen_station(p_station_id, p_name, p_description?)` | Rename/update description. |
+| `public.deactivate_kitchen_station(p_station_id, p_reason?)` | Set inactive and `deactivated_at`. |
+| `public.reactivate_kitchen_station(p_station_id)` | Set active and clear `deactivated_at`. |
+| `public.add_kitchen_station_category_route(p_station_id, p_menu_category_id)` | Add a category route. |
+| `public.remove_kitchen_station_category_route(p_station_id, p_menu_category_id)` | Remove a category route. |
+| `public.add_kitchen_station_item_route(p_station_id, p_menu_item_id)` | Add an item route. |
+| `public.remove_kitchen_station_item_route(p_station_id, p_menu_item_id)` | Remove an item route. |
+
+All mutations require Owner/Admin/Manager in the station branch. Kitchen Staff
+may read configuration but cannot mutate it. Cashier and anonymous clients are
+denied. Duplicate station names and duplicate routes return
+`RESOURCE_CONFLICT`; adding a route to an inactive station returns
+`KITCHEN_STATION_INACTIVE`; cross-organization station references return
+`KITCHEN_STATION_NOT_FOUND`; cross-organization menu references return
+`MENU_ITEM_NOT_FOUND`.
+
+Station mutations return the complete station object with `categoryRoutes` and
+`itemRoutes`. Deactivation never cancels existing tickets; existing tickets
+remain readable and completable, and reactivation restores the routes.
+
+**Kitchen error codes**
+
+`KITCHEN_TICKET_NOT_FOUND`, `KITCHEN_TICKET_ITEM_NOT_FOUND`,
+`KITCHEN_INVALID_TRANSITION`, `KITCHEN_TICKET_CANCELLED`,
+`KITCHEN_TICKET_INCONSISTENT`, `KITCHEN_CANCELLATION_INVALID`,
+`KITCHEN_STATION_NOT_FOUND`, and `KITCHEN_STATION_INACTIVE` are part of the
+shared `API_ERROR_CODES` union.
+
+**Realtime**
+
+Kitchen Realtime contract, channel naming, filters, event semantics, and
+recovery behavior are documented in
+[`realtime-architecture.md`](./realtime-architecture.md). Publication and
+contract are implemented; branch-isolation delivery tests are blocked by the
+unavailable local stack, so `BLK-008` remains open and polling is supported.
+
+**Order versus kitchen ownership**
+
+POS owns the order lifecycle. Kitchen Staff own kitchen ticket/item preparation.
+Kitchen Staff cannot call `transition_order_status` for order-level `preparing`
+or `ready`; Owner/Admin/Manager retain those transitions. Kitchen item
+completion never marks an order served, completed, or paid.
 
 ### 8.6 POS — Billing and Payments
 
@@ -1388,6 +1722,10 @@ The backend must validate filter values and enforce authorization independently.
 ### 14.5 Date and Time
 
 Use UTC timestamps for stored instants.
+
+Wire timestamps are ISO-8601 instants. Accept `Z` or a numeric UTC offset
+(`+00:00`, `+07:00`, and so on) and normalize to UTC `Z` at the trust boundary.
+Reject malformed, impossible, or offset-less values rather than coercing them.
 
 Branch-local date filtering must use the branch's configured IANA timezone.
 

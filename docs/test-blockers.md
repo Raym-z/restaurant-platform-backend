@@ -7,13 +7,19 @@ here. A skipped test must reference a `BLK-###` entry and the reason; otherwise
 | ID | Blocked area | Why blocked | Affected suites |
 |---|---|---|---|
 | BLK-001 | Exact billing arithmetic: tax base, tax/service ordering, compounding, inclusivity, discount scope/stacking, rounding | The bill-calculation contract is not approved | `250_rpc_billing`, `260_rpc_payment`, billing integration |
-| BLK-002 | Unapproved order/item transition matrix, cancellation effects on bills, KDS notification behavior | Exact transition rules are deferred | `240_rpc_orders`, order integration |
+| BLK-002 | Cancellation effects on bills and guest-facing KDS notifications | M3 approved the order-level transition matrix; M4.2 implements independent kitchen item transitions and M4.3 implements the KDS read/station APIs. Billing effects and guest-facing notification behavior remain unapproved | `250_rpc_billing`, `260_rpc_payment`, billing integration |
 | BLK-003 | Guest token expiry duration, rotation, cleanup schedule | Expiry policy is not approved | `130_rls_guest_session`, guest integration |
 | BLK-004 | Waitlist behavior under subscription restriction; notification timing and no-show thresholds | Queue workflow/restriction rules are not specified | `270_rpc_waitlist`, `280_rpc_subscription` |
 | BLK-005 | Granular role-to-permission mappings beyond documented role scope | The detailed permission matrix is not approved | `210_rpc_staff_access`, authorization tests |
 | BLK-006 | Bill reopen/void/replacement authorization, transitions, and replacement linkage | Correction workflow is not approved | `250_rpc_billing` |
 | BLK-007 | Refund, void, correction, and reconciliation workflows | Financial correction workflow is not approved | `260_rpc_payment` |
-| BLK-008 | Realtime channel names, publication payloads, and subscription filtering | Realtime configuration is not approved | Realtime authorization tests |
+| BLK-008 | Realtime branch-isolation and delivery verification | M4.3 approves and implements the kitchen publication, channel, filters, and payload contract. Local Supabase/Docker is unavailable in this environment, so two-branch RLS delivery tests have not run. Polling remains the supported fallback | Realtime authorization tests |
+
+`BLK-002` no longer claims item-level kitchen transitions are unimplemented;
+those are provided by M4.2. `BLK-008` remains open until the M4.3 Realtime
+integration tests run against a live local Supabase stack. The publication and
+channel contract are implemented, but they are **not** verified as
+production-ready.
 
 ## Rules
 

@@ -41,19 +41,49 @@ The fixed roles are:
 
 - **Owner** — exactly one per organization; organization-wide authority.
 - **Admin** — organization administration, with scope determined by explicit organization-wide or assigned-branch scope.
-- **Manager** — operational management within assigned branches.
-- **Cashier** — cashier and payment workflows within assigned branches.
-- **Kitchen Staff** — kitchen and preparation workflows within assigned branches.
+- **Manager** — operational management at the specific branch on each assignment.
+- **Cashier** — cashier and payment workflows at the specific branch on each assignment.
+- **Kitchen Staff** — kitchen and preparation workflows at the specific branch on each assignment.
 
 Role permissions and scope are enforced by trusted backend logic and database policies, not merely by frontend navigation or UI visibility. Admin scope must be represented explicitly; an Admin must not automatically be assumed to have organization-wide access unless assigned that scope.
 
+Each role assignment carries an explicit scope. Organization-scoped assignments have no branch. Branch-scoped assignments reference exactly one branch in the same organization. A staff member may hold different roles at different branches:
+
+| Staff member | Assignment | Effective reach |
+|---|---|---|
+| A | Manager, Branch 1 | Branch 1 only, as Manager |
+| A | Cashier, Branch 2 | Branch 2 only, as Cashier |
+| B | Kitchen Staff, Branch 1 | Branch 1 only, as Kitchen Staff |
+| C | Owner, organization | All branches, organization-wide |
+
+A role assigned to Branch 1 never grants that role at Branch 2. Multiple roles combine as a union only within their own scopes.
+
 ### Staff Branch Assignment
 
-Associates staff with the branches they may access.
+Associates staff with the branches they may access and remains a required gate for branch-scoped roles.
 
 - Owner access is organization-wide.
-- Manager, Cashier, and Kitchen Staff access is limited to assigned branches.
-- Admin access may be organization-wide or limited to assigned branches, according to the explicit scope assigned to that Admin.
+- Manager, Cashier, and Kitchen Staff access is limited to the specific branch assigned on each role row, and requires an active branch assignment for that branch.
+- Admin access may be organization-wide or limited to a specific branch, according to the explicit scope assigned to that Admin.
+- A branch assignment by itself grants no role and no branch visibility.
+- Revoking a branch assignment suspends access while the role row remains active; re-assigning the branch restores that role. Permanent removal requires revoking the role assignment.
+
+### Staff Invitation
+
+A staff invitation is an organization-scoped, single-use record that proposes a
+staff membership before an Auth account is attached to the organization.
+
+- Fields: organization, optional branch, normalized email, display name, role,
+  explicit scope, inviter, expiry, delivery count, and status.
+- Only a SHA-256 hash of the acceptance token is stored.
+- Status is `pending`, `accepted`, `revoked`, or `expired`.
+- Acceptance requires an authenticated account whose verified email matches the
+  invitation and creates the staff profile and role assignment atomically.
+- Admin invitations may only be created by the Owner; an Admin may invite
+  Manager, Cashier, or Kitchen Staff.
+- At most one pending invitation exists per organization and email.
+- Accepted and revoked invitations are retained for audit and are not deleted.
+- The existing one-organization-per-staff-account rule is unchanged.
 
 ### Platform Admin Identity
 
@@ -142,11 +172,10 @@ The initial proposed order lifecycle is:
 | Preparing | Kitchen preparation is underway.         |
 | Ready     | Preparation is complete.                 |
 | Served    | Delivered to the customer.               |
-| Cancelled | Cancelled before completion.             |
+| Completed | Operational work is finished.            |
+| Cancelled | Cancelled before operational completion. |
 
-The backend validates allowed transitions. Fulfillment status is separate from payment status; an order's preparation progress must not be used as a substitute for bill or payment state.
-
-Exact transition rules, including exceptional cancellation and item-level transitions, remain part of the detailed contract review.
+The backend validates allowed transitions. Fulfillment status is separate from payment status; an order's preparation progress must not be used as a substitute for bill or payment state. M3 adds the operational `completed` state and the approved order-level transition matrix; item-level preparation transitions and cancellation effects on bills remain deferred. See `docs/m3-core-pos-operations.md`.
 
 ## 6. Billing and Payment Domain
 
@@ -249,6 +278,10 @@ Subscription billing is separate from restaurant order payment.
 Audit records capture sensitive or consequential actions, including:
 
 - Staff role assignments, branch assignments, and access-scope changes.
+  When a branch-scoped role grant creates the matching branch assignment
+  implicitly, the `staff.role_granted` event is authoritative and records the
+  branch; no duplicate `staff.branch_assigned` event is emitted for that
+  implicit creation.
 - Branch and organization configuration changes.
 - Order cancellation, adjustment, and exceptional correction.
 - Payment recording, void, correction, or refund.
@@ -330,6 +363,53 @@ The following rules were reviewed and approved for the initial release. They ref
 - An order must not be considered served merely because its items are Ready.
 - The backend coordinates and validates item-level and order-level status transitions. The exact transition matrix and exceptional paths remain to be specified.
 
+M4.1 adds the KDS storage foundation: branch-scoped kitchen stations,
+category/item menu routing, and one active kitchen ticket per `(order, station)`
+with ticket items linked to immutable order-item snapshots. M4.2 generates
+tickets on order acceptance, keeps independent `kitchen_ticket_items.status` so
+the M3 order-item cascade cannot overwrite kitchen progress, aggregates ticket
+status from item state, and propagates cancellation. Tickets carry a `generation`
+number so cancelled station tickets remain historical while later work receives
+a new active ticket. Cancellation rows record `cancelled_by_actor_type`
+(`staff` or `system`) plus `cancelled_by_staff_id` for staff cancellations;
+system cancellations have a null staff id and are never attributed to the order
+submitter. `order_items.status` remains the M3 order-lifecycle state.
+
+M4.2 final corrections add these KDS invariants:
+
+- `public.remove_order_item` may remove items from `pending`, `accepted`,
+  `preparing`, or `ready` orders while every matching kitchen item is
+  `pending`/`preparing`/`ready`; an unrouted item has no matching kitchen item
+  and follows the same rule. The order status is not regressed, the subtotal is
+  recalculated atomically, and terminal orders remain blocked.
+- Any matching `completed` kitchen item blocks removal. Multi-station removals
+  succeed or fail atomically.
+- An `AFTER INSERT OR UPDATE OF status` trigger on `kitchen_ticket_items`
+  recalculates the parent ticket for direct item writes and rejects active items
+  under cancelled tickets. Direct kitchen writes remain a trusted/privileged
+  boundary, not a client API.
+- Cancellation attribution fields on cancelled tickets and ticket items are
+  immutable. Staff/system constraints remain in force for first-time
+  cancellation.
+
+M4.3 adds no new tables or columns. It adds:
+
+- Bounded KDS read RPCs that combine ticket, station, order, dining-session,
+  table, order-item, and modifier snapshots into one operational response. The
+  response excludes all financial fields.
+- Station and routing management RPCs. Station names remain unique per branch;
+  deactivation keeps routes and existing tickets; reactivation restores routing.
+- A kitchen Realtime publication for tickets, ticket items, stations, and route
+  tables. Route tables use full replica identity for `DELETE` delivery.
+- An explicit ownership policy: POS controls the order lifecycle and Kitchen
+  Staff control kitchen ticket/item preparation. Kitchen Staff cannot move the
+  order lifecycle to `preparing` or `ready`.
+
+See
+[`m4-kitchen-infrastructure.md`](./m4-kitchen-infrastructure.md),
+[`m4-kitchen-ticket-lifecycle.md`](./m4-kitchen-ticket-lifecycle.md), and
+[`realtime-architecture.md`](./realtime-architecture.md).
+
 ### 11.7 Bill Finalization and Subsequent Orders
 
 - Bill finalization is an explicit staff action. It is not triggered automatically by an order becoming served or by a customer requesting checkout.
@@ -354,7 +434,7 @@ The conceptual model and the detailed rules in this document have been approved.
 3. Exact menu/category branch availability behavior and modifier pricing/selection constraints.
 4. Exact table and dining-session state transitions, session expiry behavior, and concurrent session-creation implementation.
 5. Guest token expiry, rotation, device limits, revocation, and cleanup schedule.
-6. Exact order and order-item status transition matrix, cancellation authorization, cancellation effects on bills, and KDS notification behavior.
+6. Cancellation effects on bills and guest-facing kitchen notification behavior. Order/item transitions and KDS read/station APIs are implemented.
 7. Bill calculation details: tax inclusivity, calculation base, tax/service-charge ordering, discount scope and stacking, calculation sequence, and the single rounding policy.
 8. Finalized-bill reopening/voiding authorization, status transitions, replacement linkage, and audit requirements.
 9. Payment idempotency, cash reconciliation, and audited correction/void/refund workflows.

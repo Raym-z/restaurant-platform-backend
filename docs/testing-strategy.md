@@ -31,13 +31,31 @@ The authorization model under test is exactly:
 
 - Owner (organization-wide)
 - Admin (organization-wide or explicitly branch-scoped)
-- Manager (assigned branches)
-- Cashier (assigned branches)
-- Kitchen Staff (assigned branches)
+- Manager (specific branch per assignment)
+- Cashier (specific branch per assignment)
+- Kitchen Staff (specific branch per assignment)
 
 Host/Queue Staff is not part of the initial release and must not appear in
 fixtures, seed data, or tests. Granular permission mappings beyond documented
 role scope are blocked (`BLK-005`).
+
+Tests must distinguish a branch assignment from a role assignment: a branch
+assignment alone grants no role or branch visibility. Branch-assignment
+revocation suspends access while the role row remains active; re-assigning the
+branch restores the role, so permanent removal requires revoking the role.
+
+When merging M3, resolve `tests/integration/security/helpers.ts` in favor of the
+M2 revision that writes `staff_role_assignments.branch_id`. M3's `addStaff`
+fixtures pass `branchIds`, so the M2 helper is compatible. Do not merge the
+older M3 helper revision that inserts only `scope_type`; it will create invalid
+branch-scoped fixtures after M2.1.
+
+The M2 concurrency suite also reads the actual
+`20261108120000_m2_branch_scoped_staff_roles.sql` source, asserts that its
+`LOCK TABLE ... IN SHARE MODE` precedes the backfill invocation, and executes
+that lock statement while a concurrent branch-assignment insert is attempted.
+A contract test in `tests/contract/migration-rules.test.mjs` guards the same
+migration ordering without a database.
 
 ## 4. Test layers and tools
 

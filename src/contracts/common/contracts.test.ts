@@ -6,10 +6,13 @@ import {
   ApiErrorCodeSchema,
   ApiErrorPayloadSchema,
   AppError,
+  GrantStaffRoleRequestSchema,
+  GrantStaffRoleResponseSchema,
   GuestSessionContextSchema,
   HTTP_STATUS_BY_ERROR_CODE,
   PermissionKeySchema,
   ResolveTableResponseSchema,
+  RevokeStaffRoleResponseSchema,
   StaffRoleAssignmentSchema,
   SubmitGuestOrderRequestSchema,
   UtcInstantSchema,
@@ -17,7 +20,7 @@ import {
   apiSuccess,
   apiSuccessSchema,
   toValidationIssues,
-} from "../../index.js";
+} from "../../index.ts";
 
 const session = {
   sessionId: "00000000-0000-4000-8000-000000000001",
@@ -141,6 +144,129 @@ describe("role scope contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("allows the same staff member to hold different roles at two branches", () => {
+    const managerAtA = StaffRoleAssignmentSchema.parse({
+      role: "manager",
+      scope: "branch",
+      branchId: session.branchId,
+    });
+    const cashierAtB = StaffRoleAssignmentSchema.parse({
+      role: "cashier",
+      scope: "branch",
+      branchId: "00000000-0000-4000-8000-000000000005",
+    });
+
+    expect(managerAtA.branchId).toBe(session.branchId);
+    expect(cashierAtB.role).toBe("cashier");
+  });
+});
+
+describe("staff role grant contracts", () => {
+  it("requires a branch identifier for branch-scoped grants", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "manager",
+        scope: "branch",
+        reason: "Open the second branch",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a branch identifier on organization-scoped grants", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "admin",
+        scope: "organization",
+        branchId: session.branchId,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a branch-scoped grant with a branch identifier", () => {
+    expect(
+      GrantStaffRoleRequestSchema.safeParse({
+        staffId: session.tableId,
+        role: "cashier",
+        scope: "branch",
+        branchId: session.branchId,
+        reason: "Cashier at the main branch",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires the response to state the branch, including null for organization scope", () => {
+    const branchResponse = GrantStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      roleCode: "manager",
+      scope: "branch",
+      branchId: session.branchId,
+    });
+    const organizationResponse = GrantStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      roleCode: "admin",
+      scope: "organization",
+      branchId: null,
+    });
+
+    expect(branchResponse.branchId).toBe(session.branchId);
+    expect(organizationResponse.branchId).toBeNull();
+  });
+});
+
+describe("staff role revocation contracts", () => {
+  it("accepts revoked and already-revoked branch responses", () => {
+    const revoked = RevokeStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      branchId: session.branchId,
+      status: "revoked",
+    });
+    const alreadyRevoked = RevokeStaffRoleResponseSchema.parse({
+      assignmentId: session.sessionId,
+      staffId: session.tableId,
+      branchId: null,
+      status: "already_revoked",
+    });
+
+    expect(revoked.status).toBe("revoked");
+    expect(alreadyRevoked.status).toBe("already_revoked");
+  });
+
+  it("rejects unknown statuses and extra fields", () => {
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        branchId: session.branchId,
+        status: "pending",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        branchId: session.branchId,
+        status: "revoked",
+        unexpected: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires the branch field, including explicit null", () => {
+    expect(
+      RevokeStaffRoleResponseSchema.safeParse({
+        assignmentId: session.sessionId,
+        staffId: session.tableId,
+        status: "revoked",
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("permission key contracts", () => {
@@ -204,12 +330,24 @@ describe("guest contracts", () => {
 });
 
 describe("time contracts", () => {
-  it("accepts UTC instants and rejects offset timestamps", () => {
-    expect(UtcInstantSchema.safeParse("2026-11-08T10:00:00Z").success).toBe(
-      true,
+  it("normalizes UTC and offset timestamps to Z", () => {
+    expect(UtcInstantSchema.parse("2026-11-08T10:00:00Z")).toBe(
+      "2026-11-08T10:00:00.000000Z",
     );
-    expect(
-      UtcInstantSchema.safeParse("2026-11-08T10:00:00+07:00").success,
-    ).toBe(false);
+    expect(UtcInstantSchema.parse("2026-11-08T17:00:00+07:00")).toBe(
+      "2026-11-08T10:00:00.000000Z",
+    );
+    expect(UtcInstantSchema.parse("2026-11-08T10:00:00+00:00")).toBe(
+      "2026-11-08T10:00:00.000000Z",
+    );
+  });
+
+  it("rejects malformed or invalid timestamps", () => {
+    expect(UtcInstantSchema.safeParse("2026-11-08T10:00:00").success).toBe(
+      false,
+    );
+    expect(UtcInstantSchema.safeParse("2026-13-40T10:00:00Z").success).toBe(
+      false,
+    );
   });
 });

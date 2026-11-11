@@ -9,25 +9,39 @@ schemas shared by the backend, POS, ordering, and waitlist applications.
   TypeScript types.
 - Runtime validation is mandatory at trusted boundaries. TypeScript types do not
   validate incoming requests.
-- IDs are UUID strings. Timestamps are ISO-8601 UTC strings ending in `Z`.
+- IDs are UUID strings. Timestamps are ISO-8601 instants: inputs may use `Z`
+  or a numeric offset, and the shared schema normalizes them to UTC `Z` (for
+  example `2026-11-08T10:00:00.000000Z`). Malformed or impossible timestamps
+  are rejected.
 - Money is represented as integer minor units plus an ISO 4217 currency code.
   Floating-point monetary values are rejected.
 - API responses use the success/error envelopes in `common/api-response.ts`.
 - Error codes are a closed union in `common/errors.ts`.
 - Roles are limited to Owner, Admin, Manager, Cashier, and Kitchen Staff.
-- Role assignments carry an explicit `organization` or `branch` scope. An Admin
-  is never assumed organization-wide.
+- Role assignments carry an explicit `organization` or `branch` scope and a
+  nullable `branchId`. Branch-scoped assignments require the branch; organization
+  scope requires `null`. An Admin is never assumed organization-wide.
+- `grant_staff_role` requests follow the same rule: `branchId` is required for
+  branch scope and rejected for organization scope. `revoke_staff_role` responses
+  are typed as `revoked` or `already_revoked`, always include `branchId` (nullable
+  for organization scope), and are validated by
+  `RevokeStaffRoleResponseSchema`.
 - Permission keys are intentionally treated as opaque strings here. The
   approved role-to-permission mapping is maintained separately and is not
   seeded by this package.
 - Guest tokens are raw opaque credentials returned once by a trusted Edge
   Function. Only their SHA-256 hashes are persisted server-side.
+- Relative imports use explicit `.ts` extensions so the same contracts work in
+  Deno Edge Functions. TypeScript consumers should enable
+  `allowImportingTsExtensions` (or use a bundler that resolves them).
 
 ## Deliberately out of scope
 
 - Billing arithmetic: tax, service charge, discounts, and rounding require
   explicit business approval before implementation.
-- Unapproved order transitions.
+- Item-level preparation transitions, cancellation billing effects, and KDS
+  notification behavior. Order-level transitions are published in
+  `order/status.ts` and implemented by M3.
 - Payment void, correction, and reopening workflows.
 - RLS policies, grants, and schema-dependent RPCs. These wait for Agent 1's
   merged schema baseline.
